@@ -199,7 +199,10 @@ def plot_ods(
                     if not std_dev or std_dev == "area":
                         ax.plot(xs, ys, **style)
                         if std_dev == "area":
-                            ax.fill_between(xs, ys-std_dev_data["OD"], ys+std_dev_data["OD"], color=style["color"], alpha=0.2)
+                            # reset_index() is required here because the index
+                            # of ys is a running number while the index of
+                            # std_dev_data is an empty string (due to how its created)
+                            ax.fill_between(xs, ys.reset_index(drop=True)-std_dev_data["OD"], ys.reset_index(drop=True)+std_dev_data["OD"], color=style["color"], alpha=0.2)
                     elif std_dev == "bar":
                         ax.errorbar(xs, ys, yerr=std_dev_data["OD"], errorevery=4, **style)
             
