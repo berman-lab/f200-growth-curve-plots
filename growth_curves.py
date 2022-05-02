@@ -93,25 +93,28 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None)
     
     return new_df
 
-# This only supports an index of no more than 3 levels, and each axes can only support an index of one level.
-# multi_well can be "mean", BUT THIS REQUIRES THE TIME COLUMN TO BE SYNCED ACROSS ALL MEASUREMENTS!
 def plot_ods(
-    df, x_index=None, y_index=None, x_title=None, y_title=None, cmap=None, style_func=None, multi_well=None, mean_indices=None,
-    std_dev=None, # None, "bar", "area"
+    df, x_index=None, y_index=None, x_title=None, y_title=None, cmap=None, style_func=None,
+    mean_indices=None, # A list of indices to group by for averaging (the other indices will be averaged over).
+    std_dev=None, # None, "bar", "area" -- must be used with mean_indices!
     dpi=150,
     legend=True,
     title_all_axes=False,
     alpha=1,
 ):
-    if std_dev is not None and multi_well is None:
-        multi_well = "mean"
+    if std_dev is not None and mean_indices is None:
+        raise ValueError("std_dev is not None but mean_indices was not given!")
     
     if cmap is None:
         cmap = cm.get_cmap("viridis")
     elif isinstance(cmap, str):
         cmap = cm.get_cmap(cmap)
     
-    df = df.copy()
+    if mean_indices:
+        df = avg_over_ixs(df, mean_indices)
+    else:
+        df = df.copy()
+    
     if x_index is None:
         x_index = "_dummy_x"
         df[x_index] = ""
@@ -159,9 +162,13 @@ def plot_ods(
                 # TODO: is this safe? Should we log this?
                 continue
             
-            # TODO: this assumes that the Well index is the last one
-            # (otherwise, the .loc won't work).
-            ixs = df_slice.index.droplevel("Well").unique()
+            if "Well" in df_slice.index.names:
+                # TODO: this assumes that the Well index is the last one
+                # (otherwise, the .loc won't work).
+                ixs = df_slice.index.droplevel("Well").unique()
+            else:
+                ixs = df_slice.index.unique()
+                
             for ix_ix, ix in enumerate(ixs):
                 data = df_slice.loc[ix]
                 
@@ -171,10 +178,11 @@ def plot_ods(
                 else:
                     color = cmap(1.0*(ix_ix/(len(ixs)-1)))
                 
-                if multi_well == "mean":
+                if mean_indices is not None:
                     if std_dev is not None:
-                        std_dev_data = data.groupby("Time (s)").std().reset_index()
-                    data = data.copy().groupby("Time (s)").mean().reset_index()
+                        std_dev_data = data["OD std"].reset_index()
+                        std_dev_data["OD"] = std_dev_data["OD std"]
+                    data["OD"] = data["OD mean"]
                     data["Well"] = ""
                     # TODO: the append=False assumes there are no more index levels.
                     data.set_index("Well", append=False, drop=True, inplace=True)
@@ -201,7 +209,7 @@ def plot_ods(
                         if std_dev == "area":
                             # reset_index() is required here because the index
                             # of ys is a running number while the index of
-                            # std_dev_data is an empty string (due to how its created)
+                            # std_dev_data is an empty string (due to how it's created)
                             ax.fill_between(xs, ys.reset_index(drop=True)-std_dev_data["OD"], ys.reset_index(drop=True)+std_dev_data["OD"], color=style["color"], alpha=0.2)
                     elif std_dev == "bar":
                         ax.errorbar(xs, ys, yerr=std_dev_data["OD"], errorevery=4, **style)
@@ -216,11 +224,44 @@ def plot_ods(
         for ax_row in axs:
             # TODO: this gives a warning if some of the Axes on the row have no
             # values, and in any case will only display the legend for the
-            # rightmost Aaxes.
+            # rightmost Axes.
             ax_row[-1].legend(bbox_to_anchor=(1.05, 1),
                              loc='upper left', borderaxespad=0., fontsize=6)
     
     return fig
+
+def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_method="from_derivatives"):
+    dfs_to_concat = []
+    for exp_ix in df_in.index.droplevel([i for i in df_in.index.names if i not in avg_levels]).unique():
+        exp_df = df_in.xs(exp_ix, level=avg_levels)[[x_col, y_col]]
+        
+        avg_dfs = []
+        for avg_ix in exp_df.index.unique():
+            avg_dfs.append( exp_df.loc[avg_ix].set_index(x_col) )
+        
+        joined_df = avg_dfs[0]
+        for col_suffix, df in enumerate(avg_dfs[1:]):
+            joined_df = joined_df.join(df, how="outer", sort=True, rsuffix=str(col_suffix))
+            
+        for col_name in joined_df.columns:
+            joined_df.loc[:,col_name] = joined_df.loc[:,col_name].interpolate(method=interpolation_method)
+            
+        joined_df.dropna(inplace=True) # For the extreme NaNs that don't get interpolated
+        
+        mean_s = joined_df.mean(axis=1)
+        std_s = joined_df.std(axis=1).fillna(0) # Std. dev. will be NaN if there's only one value to average
+        joined_df[f"{y_col} mean"] = mean_s
+        joined_df[f"{y_col} std"] = std_s
+        
+        joined_df = pd.DataFrame({f"{y_col} mean": mean_s, f"{y_col} std": std_s}).reset_index()
+        # TODO: is there a better way to set a single multi-index tuple into a dataframe?
+        for level_name, level_value in zip(avg_levels, exp_ix):
+            joined_df[level_name] = level_value
+        
+        joined_df.set_index(list(avg_levels), inplace=True)
+        dfs_to_concat.append(joined_df)
+        
+    return pd.concat(dfs_to_concat)
 
 # Example of a style function:
 def style_func(x_label, y_label, ax_index):
