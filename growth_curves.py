@@ -185,7 +185,7 @@ def plot_ods(
     mean_indices=None,
     std_dev=None, # None, "bar", "area" -- must be used with mean_indices!
     style_func=None,
-    legend=True,
+    legend="last col",
     title_all_axes=False,
     cmap="viridis",
     dpi=150,
@@ -228,8 +228,10 @@ def plot_ods(
         A callable that accepts a tuple of ``(x_label, y_label, ix)`` where ix is
         the index of the curve to draw. It should return a dict of kwargs for
         the `Axes.plot` method.
-    legend : bool, default=True
-        If True, will add a legend of the curves at the end of each row.
+    legend : {"last col", "every axes", "none"}
+        - ``"last col"`` will add a legend at the end of each row.
+        - ``"every axes"`` will add a legend to every axes.
+        - ``"none"`` will not show any legends.
     title_all_axes : bool, default=False
         If True, will set the title for all Axes (not just the top row).
     cmap : str or `matplotlib.colors.Colormap`, default='viridis'
@@ -362,8 +364,11 @@ def plot_ods(
                 if prev_title:
                     prev_title += "\n"
                 ax.set_title(prev_title + str(ixs[0]))
+                
+            if legend == "every axes":
+                ax.legend(fontsize=8, loc='upper left')
     
-    if legend:
+    if legend == "last col":
         for ax_row in axs:
             # TODO: this gives a warning if some of the Axes on the row have no
             # values, and in any case will only display the legend for the
@@ -467,3 +472,7 @@ def add_row_col(df):
     
     return result
 
+def plot_plate(df):
+    return plot_ods(
+        add_row_col(df), x_index="Column", y_index="Row", legend="every axes"
+    )
