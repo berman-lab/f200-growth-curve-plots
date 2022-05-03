@@ -300,70 +300,83 @@ def plot_ods(
             ax = axs[row_ix][col_ix]
             ax.xaxis.set_tick_params(which='both', labelbottom=True)
             
-            try:
-                df_slice = df.xs((x_label, y_label), level=(x_index, y_index))
-            except KeyError:
-                # Not all indexes are guaranteed to be in every axes.
-                # TODO: is this safe? Should we log this?
+            # Not all indexes are guaranteed to be in every axes. Skip them if
+            # they don't exist.
+            if x_label not in df.index.get_level_values(x_index) or \
+                y_label not in df.index.get_level_values(y_index):
                 continue
+            ax_df = df.xs((x_label, y_label), level=(x_index, y_index))
             
-            if "Well" in df_slice.index.names:
+            # The same condition can be run in several wells, and this gets
+            # special treatment in the condition loop. To set up the condition
+            # loop, we need to get all of the condition indexes, but without the
+            # well information.
+            if "Well" in ax_df.index.names:
                 # TODO: this assumes that the Well index is the last one
                 # (otherwise, the .loc won't work).
-                ixs = df_slice.index.droplevel("Well").unique()
+                condition_ixs = ax_df.index.droplevel("Well").unique()
             else:
-                ixs = df_slice.index.unique()
+                condition_ixs = ax_df.index.unique()
                 
-            for ix_ix, ix in enumerate(ixs):
-                data = df_slice.loc[ix]
+            for con_ix_count, con_ix in enumerate(condition_ixs):
+                con_df = ax_df.loc[con_ix]
                 
                 # TODO: colors break when an index is missing from one of the axes
-                if len(ixs) == 1:
+                if len(condition_ixs) == 1:
                     color = "black"
                 else:
-                    color = cmap(1.0*(ix_ix/(len(ixs)-1)))
+                    color = cmap(1.0*(con_ix_count/(len(condition_ixs)-1)))
                 
                 if mean_indices is not None:
                     if std_dev is not None:
-                        std_dev_data = data["OD std"].reset_index()
-                        std_dev_data["OD"] = std_dev_data["OD std"]
-                    data["OD"] = data["OD mean"]
-                    data["Well"] = ""
+                        std_dev_df = con_df["OD std"].reset_index()
+                        std_dev_df["OD"] = std_dev_df["OD std"]
+                    con_df["OD"] = con_df["OD mean"]
+                    con_df["Well"] = ""
                     # TODO: the append=False assumes there are no more index levels.
-                    data.set_index("Well", append=False, drop=True, inplace=True)
+                    con_df.set_index("Well", append=False, drop=True, inplace=True)
                     
-                wells = data.index.get_level_values("Well").unique()
+                wells = con_df.index.get_level_values("Well").unique()
                 
                 for well_ix, well in enumerate(wells):
-                    well_data = data.loc[well]
+                    well_df = con_df.loc[well]
                     style = {
-                        "label": ix,
+                        "label": con_ix,
                         "color": color,
                         "alpha": alpha,
                     }
                     if style_func is not None:
-                        user_style = style_func(x_label, y_label, ix)
+                        user_style = style_func(x_label, y_label, con_ix)
                         style.update(user_style)
                     if well_ix > 0:
+                        # This will hide this entry from the legend:
                         style["label"] = f"_{style['label']}"
                     
-                    xs = well_data["Time (s)"] / 60 / 60
-                    ys = well_data["OD"]
+                    xs = well_df["Time (s)"] / 60 / 60
+                    ys = well_df["OD"]
                     if not std_dev or std_dev == "area":
                         ax.plot(xs, ys, **style)
                         if std_dev == "area":
                             # reset_index() is required here because the index
                             # of ys is a running number while the index of
                             # std_dev_data is an empty string (due to how it's created)
-                            ax.fill_between(xs, ys.reset_index(drop=True)-std_dev_data["OD"], ys.reset_index(drop=True)+std_dev_data["OD"], color=style["color"], alpha=0.2)
+                            ax.fill_between(
+                                xs,
+                                ys.reset_index(drop=True) - std_dev_df["OD"],
+                                ys.reset_index(drop=True) + std_dev_df["OD"],
+                                color=style["color"], alpha=0.2
+                            )
                     elif std_dev == "bar":
-                        ax.errorbar(xs, ys, yerr=std_dev_data["OD"], errorevery=4, **style)
+                        ax.errorbar(
+                            xs, ys, yerr=std_dev_df["OD"], errorevery=4,
+                            **style
+                        )
             
-            if len(ixs) == 1 and title_all_axes:
+            if len(condition_ixs) == 1 and title_all_axes:
                 prev_title = ax.get_title()
                 if prev_title:
                     prev_title += "\n"
-                ax.set_title(prev_title + str(ixs[0]))
+                ax.set_title(prev_title + str(condition_ixs[0]))
                 
             if legend == "every axes":
                 ax.legend(fontsize=8, loc='upper left')
