@@ -379,15 +379,21 @@ def plot_ods(
                 ax.set_title(prev_title + str(condition_ixs[0]))
                 
             if legend == "every axes":
-                ax.legend(fontsize=8, loc='upper left')
+                legend_without_duplicate_labels(
+                    ax,
+                    fontsize=8, loc='upper left'
+                )
     
     if legend == "last col":
         for ax_row in axs:
             # TODO: this gives a warning if some of the Axes on the row have no
             # values, and in any case will only display the legend for the
             # rightmost Axes.
-            ax_row[-1].legend(bbox_to_anchor=(1.05, 1),
-                             loc='upper left', borderaxespad=0., fontsize=6)
+            legend_without_duplicate_labels(
+                ax_row[-1],
+                bbox_to_anchor=(1.05, 1),
+                loc='upper left', borderaxespad=0., fontsize=6
+            )
     
     return fig
 
@@ -489,3 +495,9 @@ def plot_plate(df):
     return plot_ods(
         add_row_col(df), x_index="Column", y_index="Row", legend="every axes"
     )
+
+# Adapted from https://stackoverflow.com/a/56253636
+def legend_without_duplicate_labels(ax, **kws):
+    handles, labels = ax.get_legend_handles_labels()
+    unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
+    ax.legend(*zip(*unique), **kws)
