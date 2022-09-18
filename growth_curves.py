@@ -175,7 +175,7 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None)
     
     index = pd.MultiIndex.from_tuples(index, names=list(index_names)+["Well"])
     
-    new_df = pd.DataFrame(new_data, index=index)
+    new_df = pd.DataFrame(new_data, index=index).sort_index()
     
     return new_df
 
@@ -328,6 +328,7 @@ def plot_ods(
                     color = cmap(1.0*(con_ix_count/(len(condition_ixs)-1)))
                 
                 if mean_indices is not None:
+                    con_df = con_df.copy() # To prevent SettingWithCopyWarning
                     if std_dev is not None:
                         std_dev_df = con_df["OD std"].reset_index()
                         std_dev_df["OD"] = std_dev_df["OD std"]
@@ -429,8 +430,12 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
         exp_df = df_in.xs(exp_ix, level=avg_levels)[[x_col, y_col]]
         
         avg_dfs = []
+        # No assignments are made here, but pandas still gives a warning, hence
+        # we suppress it.
+        pd.set_option('mode.chained_assignment', None)
         for avg_ix in exp_df.index.unique():
-            avg_dfs.append( exp_df.loc[avg_ix].set_index(x_col) )
+            avg_dfs.append( exp_df.loc[avg_ix].set_index(x_col).sort_index() )
+        pd.set_option('mode.chained_assignment','warn')
         
         joined_df = avg_dfs[0]
         for col_suffix, df in enumerate(avg_dfs[1:]):
