@@ -290,10 +290,12 @@ def plot_ods(
         
     # The code expects at least one level beyond the x/y levels, and if it
     # doesn't exist, create it as we did in case the x/y levels.
-    if len(df.index.levels) == 2:
+    if len(df.index.levels) == 3: # 3 = x_index + y_index + Well
         z_index = "_dummy_z"
         df[z_index] = ""
+        prev_ixes = df.index.names
         df.set_index(z_index, append=True, drop=True, inplace=True)
+        df = df.reorder_levels([z_index] + prev_ixes)
     
     x_labels = df.index.get_level_values(x_index).unique()
     y_labels = df.index.get_level_values(y_index).unique()
@@ -449,6 +451,10 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
     """
     dfs_to_concat = []
     for exp_ix in df_in.index.droplevel([i for i in df_in.index.names if i not in avg_levels]).unique():
+        # If avg_levels is only 1 level, exp_ix must be stored into a tuple
+        # for df_in.xs to work:
+        if len(avg_levels) == 1:
+            exp_ix = (exp_ix,)
         exp_df = df_in.xs(exp_ix, level=avg_levels)[[x_col, y_col]]
         
         avg_dfs = []
