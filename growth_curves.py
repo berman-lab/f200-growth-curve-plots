@@ -653,9 +653,13 @@ def norm_by_od(df, od_df):
     
     result = df.copy()
 
+    pre_well_ixs = (slice(None),) * (result.index.nlevels-1)
     for r, c in product(od_df.index, od_df.columns):
-        ix = (slice(None),)*(result.index.nlevels-1) + (f"{r}{c}",)
-        result.loc[ix, "OD"] /= od_df.loc[r, c]
+        ix = pre_well_ixs + (f"{r}{c}",)
+        
+        if not pd.isna(od_df.loc[r, c]) and \
+            ix[-1] in df.index.get_level_values("Well"):
+            result.loc[ix, "OD"] /= od_df.loc[r, c]
     
     return result
 
