@@ -688,12 +688,10 @@ def normalize_glucose(df):
     diff_dict = {"OD": [], "Time (s)": []}
     index = []
     
-    levels_to_keep = [n for n in df.index.names if n not in ("Glucose", "Well")]
-
     no_gluc_df = xss(df, [[0]], ["Glucose"], drop_singleton_levels=True)
     add_gluc_df = xss(df, [[1]], ["Glucose"], drop_singleton_levels=True)
 
-    for ix in product(*[df.index.get_level_values(l).unique() for l in levels_to_keep]):
+    for ix in df.index.droplevel(["Glucose", "Well"]).unique():
         without_gluc = no_gluc_df.loc[ix].sort_values("Time (s)")
         with_gluc = add_gluc_df.loc[ix].sort_values("Time (s)")
 
@@ -706,5 +704,5 @@ def normalize_glucose(df):
 
         index += [ix + (well,)]*len(delta)
 
-    index = pd.MultiIndex.from_tuples(index, names=levels_to_keep + ["Well"])
+    index = pd.MultiIndex.from_tuples(index, names=df.index.droplevel(["Glucose"]).names)
     return pd.DataFrame(diff_dict, index=index).sort_index()
