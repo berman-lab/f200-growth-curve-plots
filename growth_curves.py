@@ -271,7 +271,8 @@ def plot_ods(
     if isinstance(cmap, str):
         cmap = cm.get_cmap(cmap)
     
-    if mean_indices:
+    if mean_indices is not None:
+        # NB: mean_indices can be an empty sequence!
         df = avg_over_ixs(df, mean_indices)
     else:
         # Work on a copy of the df, in case we'll need to modify it:
@@ -295,6 +296,8 @@ def plot_ods(
         df[z_index] = ""
         prev_ixes = df.index.names
         df.set_index(z_index, append=True, drop=True, inplace=True)
+        # The z_index should come before the well, since we will keep it
+        # and use .loc with it later on:
         df = df.reorder_levels([z_index] + prev_ixes)
     
     x_labels = df.index.get_level_values(x_index).unique()
