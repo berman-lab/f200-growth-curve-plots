@@ -534,3 +534,45 @@ def legend_without_duplicate_labels(ax, **kws):
     handles, labels = ax.get_legend_handles_labels()
     unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
     ax.legend(*zip(*unique), **kws)
+
+"""
+Every well gets a nominal fitness computation using a function (e.g., AUC).
+
+Then we need to normalize. The normalization function can take the index of
+a well, and return the index relative to which it should be normalized.
+
+Optionally, we can avg out the wells.
+"""
+
+def auc_fitness(data):
+    from numpy import trapz
+    
+    return trapz(data["OD"], data["Time (s)"])
+
+def get_nominal_fitness(df, fit_func):
+    # AUC caclulations are more interpretable if the baseline is zero, and not
+    # some high arbitrary number.
+    # TODO: allow normalizing against a sterile control.
+    df = df.copy()
+    df["OD"] = df["OD"] - df["OD"].min()
+    data = {"Nominal": []}
+    index = []
+    
+    for row_ix in df.index.unique():
+        nominal_fit = fit_func(df.loc[row_ix])
+        data["Nominal"].append(nominal_fit)
+        index.append(row_ix)
+    
+    return pd.DataFrame(data, pd.MultiIndex.from_tuples(index, names=df.index.names)).sort_index()
+    
+def normalize_nominal_fit_df(nominal_fit_df, norm_func):
+    # Average out the fitnesses:
+    # nominal_mean_df = nominal_fit_df.groupby(level=nominal_fit_df.index.names[:-1]).mean()
+    # result = nominal_mean_df.rename({"Nominal": "Normalized"}, axis="columns")
+    result = nominal_fit_df.groupby(level=nominal_fit_df.index.names[:-1]).mean().rename({"Nominal": "Nominal mean"}, axis="columns")
+    result["Normalized"] = -1
+    
+    for ix in result.index.unique():
+        result.loc[ix, "Normalized"] = result.loc[ix]["Nominal mean"] / result.loc[norm_func(ix)]["Nominal mean"]
+    
+    return result
