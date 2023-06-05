@@ -576,3 +576,128 @@ def normalize_nominal_fit_df(nominal_fit_df, norm_func):
         result.loc[ix, "Normalized"] = result.loc[ix]["Nominal mean"] / result.loc[norm_func(ix)]["Nominal mean"]
     
     return result
+
+# Additions for the SPARK stacker:
+
+def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
+    """Parse 96-well curves from a TECAN Spark Stacker.
+    
+    Format is the same as in `read_experiment`. At this time, hoever, the plate
+    keymap needs to be passed separately.
+    
+    Parameters
+    ----------
+    over : number
+        If the reading is outside of the dynamic range, the Stacker will record
+        "OVER". This value will replace it. """
+    
+    wb = load_workbook(filename=fname)
+    sheet = wb[sheet_name]
+    
+    index = []
+    new_data = {
+        "OD": [],
+        "Time (s)": [],
+        "Temp": [],
+    }
+        
+    for row_ix, row in enumerate(sheet.iter_rows()):
+        cell_value = row[0].value
+        if cell_value == "End Time":
+            break
+        elif cell_value is None:
+            continue
+        elif cell_value == "Time [s]":
+            time = row[1].value
+        elif cell_value == "Temp. [°C]":
+            temp = row[1].value
+        elif cell_value in "ABCDEFGH":
+            for i in range(1, 13):
+                measurement_str = row[i].value
+                if measurement_str is None or measurement_str == "":
+                    continue
+                
+                # The Spark Stacker can give an "OVER" measurement if we're
+                # outside of the dynamic range:
+                new_data["OD"].append(int(measurement_str) if measurement_str != "OVER" else over)
+                new_data["Time (s)"].append(time)
+                new_data["Temp"].append(temp)
+                
+                well = f"{cell_value}{i}"
+                index.append(plate_map[well] + (well,))
+    
+    index = pd.MultiIndex.from_tuples(index, names=list(keys)+["Well"])
+    
+    return pd.DataFrame(new_data, index=index).sort_index()    
+
+def norm_by_od(df, od_df):
+    """Normalize the values in a given DataFrame by ODs from another DataFrame.
+    
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame to normalize in the format returned by `read_experiment`-like
+        functions.
+    od_df : pandas.DataFrame
+        DataFrame of ODs. Rows should be indexed A-to-F, and columns 1-to-12.
+        `df` will be normalized by using the 'Well' index level.
+        
+    Returns
+    -------
+    pandas.DataFrame
+        A normalized copy of `df`.
+    """
+    
+    result = df.copy()
+
+    for r, c in product(od_df.index, od_df.columns):
+        ix = (slice(None),)*(result.index.nlevels-1) + (f"{r}{c}",)
+        result.loc[ix, "OD"] /= od_df.loc[r, c]
+    
+    return result
+
+def normalize_glucose(df):
+    """For R6G efflux experiments - normalize the readings from +Glu to -Glu
+    condition.
+    
+    Assumes that every -/+ Glu condition has exactly two wells - so if there
+    are any repeats, they either need to be separated by a key in the index
+    or handled separately.
+    
+    Only the OD and Time (s) columns will be kept. The "Well" index will be
+    chosen arbitrarily from the two -/+ Glu wells.
+    
+    Parameters
+    ----------
+    df : pandas.DataFrame
+    
+    Returns
+    -------
+    pandas.DataFrame
+        A normalized version of `df`. The "Glucose" index level will not be
+        part of the index.
+    """
+    
+    diff_dict = {"OD": [], "Time (s)": []}
+    index = []
+    
+    levels_to_keep = [n for n in df.index.names if n not in ("Glucose", "Well")]
+
+    no_gluc_df = xss(df, [[0]], ["Glucose"], drop_singleton_levels=True)
+    add_gluc_df = xss(df, [[1]], ["Glucose"], drop_singleton_levels=True)
+
+    for ix in product(*[df.index.get_level_values(l).unique() for l in levels_to_keep]):
+        without_gluc = no_gluc_df.loc[ix].sort_values("Time (s)")
+        with_gluc = add_gluc_df.loc[ix].sort_values("Time (s)")
+
+        well = with_gluc.index[0]
+
+        delta = with_gluc["OD"].reset_index(drop=True) - without_gluc["OD"].reset_index(drop=True)
+
+        diff_dict["OD"] += list(delta)
+        diff_dict["Time (s)"] += list(without_gluc["Time (s)"])
+
+        index += [ix + (well,)]*len(delta)
+
+    index = pd.MultiIndex.from_tuples(index, names=levels_to_keep + ["Well"])
+    return pd.DataFrame(diff_dict, index=index).sort_index()
