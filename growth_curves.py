@@ -210,6 +210,8 @@ def plot_ods(
     cmap="viridis",
     dpi=150,
     alpha=1,
+    figsize_x_scale=1,
+    figsize_y_scale=1,
 ):
     """Plot the ODs from a DataFrame returned by `read_experiment`.
     
@@ -299,7 +301,7 @@ def plot_ods(
     cols = len(x_labels)
     
     fig, axs = plt.subplots(
-        rows, cols, figsize=(cols*3, rows*2),
+        rows, cols, figsize=(cols*3*figsize_x_scale, rows*2*figsize_y_scale),
         sharex=True, sharey=True, dpi=dpi
         )
     if rows == 1 and cols == 1:
