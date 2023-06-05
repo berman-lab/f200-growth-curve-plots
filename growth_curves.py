@@ -14,15 +14,21 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
     
     The **table** format is as follows:
     The first cell of the first row should store the name of the key, e.g.
-    "Strain" or "Media". The next row should be a 8-by-12 grid, with every cell
+    "Strain" or "Media". The next row should be a N-by-12 grid, with every cell
     storing the key of the corresponding well (where the top-left cell
     corresponds to the A1 well). No empty rows are allowed between the key name
-    and the key grid.
+    and the key grid. N can be less than 8 - leading empty rows should contain
+    at least one cell with '_' in it (which is always interpreted as "ignore 
+    this cell"), otherwise all cells can be empty. Trailing empty rows are not
+    necessary - the first empty row will indicate an end of the table.
     
-    An example with a 2x3 layout (instead of 8x12):
+    An example with a 3x3 layout (instead of 8x12) where the first row is to be
+    ignored:
     
     +------+---+---+
     |Strain|   |   |
+    +------+---+---+
+    |   _  |   |   |
     +------+---+---+
     |   1  | 2 | 3 |
     +------+---+---+
@@ -31,6 +37,8 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
     |      |   |   |
     +------+---+---+
     | Media|   |   |
+    +------+---+---+
+    |  _   |   |   |
     +------+---+---+
     | YPD  |YPD|YPD|
     +------+---+---+
@@ -75,39 +83,51 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
     sheet = wb[sheet_name]
     
     keys = []
-    next_ix = -1
+    start_ix = stop_ix = -1 # The start and stop ixes of a single key table
     for row_ix, row in enumerate(sheet.iter_rows()):
-        if row_ix < next_ix:
-            continue
-        
         key = row[0].value
-        if not key:
-            continue
-        key = str(key).strip()
+        if key is None or not str(key).strip():
+            # This is an empty row
+            if stop_ix < start_ix:
+                # We've reached the end of a table
+                stop_ix = row_ix - 1
+                df_rows = rows[:stop_ix-start_ix+1]
+                
+                df = pd.read_excel(
+                    in_file,
+                    sheet_name=sheet_name,
+                    skiprows=start_ix,
+                    header=None,
+                    names=cols,
+                    nrows=stop_ix-start_ix+1,
+                    engine="openpyxl"
+                )
+                df["Rows"] = df_rows
+                df.set_index("Rows", inplace=True)
+                
+                converter = converters.get(keys[-1], lambda x: x)
+                for row, col in product(df_rows, cols):
+                    if pd.isna(df.loc[row, col]) or "_" == df.loc[row, col]:
+                        continue
+                    result[f"{row}{col}"].append( converter(df.loc[row, col]) )
+            else:
+                # This is just an empty row, which we allow and simply skip
+                continue
+        elif stop_ix >= start_ix:
+            # We're either expecting the start of a key table or the end of the table list
+            key = str(key).strip()
             
-        if key.upper() == "STOP":
-            break
-        
-        keys.append(key)
-        next_ix = row_ix + 9
-        
-        df = pd.read_excel(
-            in_file,
-            sheet_name=sheet_name,
-            skiprows=row_ix+1,
-            header=None,
-            names=cols,
-            nrows=8
-        )
-        df["Rows"] = rows
-        df.set_index("Rows", inplace=True)
-        
-        converter = converters.get(key, lambda x: x)
-        for row, col in product(rows, cols):
-            result[f"{row}{col}"].append( converter(df.loc[row, col]) )
+            if key.upper() == "STOP":
+                break
             
-    for key in result:
-        result[key] = tuple(result[key])
+            keys.append(key)
+            start_ix = row_ix+1
+            
+    for key in list(result.keys()):
+        if not result[key]:
+            del result[key]
+        else:
+            result[key] = tuple(result[key])
         
     return keys, result
 
