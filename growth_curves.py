@@ -75,6 +75,8 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
     
     rows = list("ABCDEFGH")
     cols = list(range(1, 13))
+    if converters is None:
+        converters = {}
     
     cells = [f"{r}{c}" for r, c in product(rows, cols)]
     result = {c: [] for c in cells}
