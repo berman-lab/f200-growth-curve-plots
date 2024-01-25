@@ -204,6 +204,7 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None)
 def plot_ods(
     df,
     x_index=None, y_index=None, x_title=None, y_title=None,
+    x_index_key=None, y_index_key=None,
     mean_indices=None,
     std_dev=None, # None, "bar", "area" -- must be used with mean_indices!
     style_func=None,
@@ -236,6 +237,10 @@ def plot_ods(
     y_title: str, optional
         If y_index is not specified, this will be used as the title of the y
         axis of the first Axes in the figure.
+    x_index_key : callable, optional
+        A sorting key function used to order the labels of the x axis for plotting.
+    y_index_key : callabble, optional
+        As `x_index_key`, but for the y axis labels.
     mean_indices : sequence of str, optional
         The index levels which will be used to group the growth curves for
         averaging. For example, if ``("Strain", "Media")`` is passed, every unique
@@ -309,6 +314,12 @@ def plot_ods(
     
     x_labels = df.index.get_level_values(x_index).unique()
     y_labels = df.index.get_level_values(y_index).unique()
+
+    if x_index_key is not None:
+        x_labels = list(sorted(x_labels, key=x_index_key))
+    if y_index_key is not None:
+        y_labels = list(sorted(y_labels, key=y_index_key))
+    
     rows = len(y_labels)
     cols = len(x_labels)
     
