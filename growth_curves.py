@@ -214,6 +214,7 @@ def plot_ods(
     alpha=1,
     figsize_x_scale=1,
     figsize_y_scale=1,
+    ax_func=None
 ):
     """Plot the ODs from a DataFrame returned by `read_experiment`.
     
@@ -260,6 +261,10 @@ def plot_ods(
         If True, will set the title for all Axes (not just the top row).
     cmap : str or `matplotlib.colors.Colormap`, default='viridis'
         The colormap to use for the growth curves.
+    ax_func : callable, optional
+        A callable that takes three parameters: `ax, x_label, y_label`. `ax`
+        is an Axes object, and `x_label` and `y_label` are its labels (indices).
+        Used to plot extra things on individual Axes, e.g. 24-hour vertical lines.
     
     Returns
     -------
@@ -401,6 +406,9 @@ def plot_ods(
                             xs, ys, yerr=std_dev_df["OD"], errorevery=4,
                             **style
                         )
+                
+            if ax_func is not None:
+                ax_func(ax, x_label, y_label)
             
             if len(condition_ixs) == 1 and title_all_axes:
                 prev_title = ax.get_title()
