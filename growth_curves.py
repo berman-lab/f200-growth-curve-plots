@@ -531,7 +531,7 @@ def add_row_col(df):
 
 def plot_plate(df):
     return plot_ods(
-        add_row_col(df), x_index="Column", y_index="Row", legend="every axes"
+        add_row_col(df).sort_index(level="Column").sort_index(level="Row"), x_index="Column", y_index="Row", legend="every axes"
     )
 
 # Adapted from https://stackoverflow.com/a/56253636
