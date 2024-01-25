@@ -249,7 +249,7 @@ def plot_ods(
         - **bar** - show the standard deviation as whiskers.
         - **area** - show the standard deviation as a semi-transparent area.
     style_func : callable, optional
-        A callable that accepts a tuple of ``(x_label, y_label, ix)`` where ix is
+        A callable that accepts three parameters ``(x_label, y_label, ix)`` where ix is
         the index of the curve to draw. It should return a dict of kwargs for
         the `Axes.plot` method.
     legend : {"last col", "every axes", "none"}
@@ -281,7 +281,7 @@ def plot_ods(
         df = df.copy()
     
     # If the x/y indices are not specified, create singleton "dummy" levels to
-    # allow for the subequent code to be agnostic of these effects.
+    # allow for the subsequent code to be agnostic of these effects.
     if x_index is None:
         x_index = "_dummy_x"
         df[x_index] = ""
@@ -587,7 +587,7 @@ def normalize_nominal_fit_df(nominal_fit_df, norm_func):
 def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
     """Parse 96-well curves from a TECAN Spark Stacker.
     
-    Format is the same as in `read_experiment`. At this time, hoever, the plate
+    Format is the same as in `read_experiment`. At this time, however, the plate
     keymap needs to be passed separately.
     
     Parameters
