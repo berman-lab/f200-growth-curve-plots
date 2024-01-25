@@ -610,7 +610,7 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
         cell_value = row[0].value
         if cell_value == "End Time":
             break
-        elif cell_value is None:
+        elif cell_value is None or cell_value.strip() == "":
             continue
         elif cell_value == "Time [s]":
             time = row[1].value
@@ -624,7 +624,7 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
                 
                 # The Spark Stacker can give an "OVER" measurement if we're
                 # outside of the dynamic range:
-                new_data["OD"].append(int(measurement_str) if measurement_str != "OVER" else over)
+                new_data["OD"].append(float(measurement_str) if measurement_str != "OVER" else over)
                 new_data["Time (s)"].append(time)
                 new_data["Temp"].append(temp)
                 
