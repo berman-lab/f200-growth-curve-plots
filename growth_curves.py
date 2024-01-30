@@ -286,6 +286,13 @@ def plot_ods(
     if mean_indices is not None:
         # NB: mean_indices can be an empty sequence!
         df = avg_over_ixs(df, mean_indices)
+
+        # Averaging loses the "Well" index, which causes a dummy_z index to be
+        # created downstream, and that messes with the labels. We add a "synthetic"
+        # Well index for now, but it's just a stop-gap and needs to be handled.
+        # TODO: figure out our well/plate marking policy.
+        df["Well"] = ["-".join(str(j) for j in i) for i in df.index]
+        df.set_index("Well", append=True, inplace=True)
     else:
         # Work on a copy of the df, in case we'll need to modify it:
         df = df.copy()
@@ -403,13 +410,15 @@ def plot_ods(
                     if not std_dev or std_dev == "area":
                         ax.plot(xs, ys, **style)
                         if std_dev == "area":
-                            # reset_index() is required here because the index
+                            # NB: reset_index() is required here because the index
                             # of ys is a running number while the index of
                             # std_dev_data is an empty string (due to how it's created)
+                            # NB: .tolist() is needed for some versions of matplotlib
+                            # which throw a weird error if a float64 Series is passed.
                             ax.fill_between(
-                                xs,
-                                ys.reset_index(drop=True) - std_dev_df["OD"],
-                                ys.reset_index(drop=True) + std_dev_df["OD"],
+                                xs.tolist(),
+                                (ys.reset_index(drop=True) - std_dev_df["OD"]).tolist(),
+                                (ys.reset_index(drop=True) + std_dev_df["OD"]).tolist(),
                                 color=style["color"], alpha=0.2
                             )
                     elif std_dev == "bar":
