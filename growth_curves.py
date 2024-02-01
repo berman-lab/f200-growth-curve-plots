@@ -4,6 +4,29 @@ import pandas as pd
 from openpyxl import load_workbook
 from itertools import product
 
+"""
+The DataFrame structure used for plotting:
+
+1 - Index
+
+The index should be 0-N logical indices (e.g., Strain, FLC) and 1 technical
+index (_Source). _Source should uniquely identify a growth curve within a set of
+logical indices.  It should be of the format:
+Key1:Val1;Key2:Val2;[...]KeyN:ValN;
+
+Note that while a set of logical indices must have one or more unique
+_Source values, a _Source value need not be unique across different sets of
+logical indices. This scenario happens in DataFrames that were averaged over.
+Nevertheless, this should be treated as an edge case and avoided if possible.
+For example, it can identify a specific well, or a plate/well combination.
+Additionally, _Source must always be the last index. reorder_indices is a
+helper function written to enforce that.
+
+Downstream functions should declare which keys they expect, and it's up to the
+user to make sure those keys exist and are correct. It is possible that not all
+keys will exist in all DataFrames (e.g., the Well key can't remain after averaging).
+"""
+
 def read_plate_key(in_file, sheet_name="Keys", converters=None):
     """Read the plate keys from a given sheet in an Excel file.
     
@@ -133,7 +156,7 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
         
     return keys, result
 
-def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None):
+def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None, plate_name=None):
     """Parse plate growth curve data into a DataFrame.
     
     Reads the plate data along with the relevant keys (expected to be in the
@@ -153,6 +176,8 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None)
     converters : dict, optional
         Converters for the key values, see the same parameter in the
         `read_plate_key` function.
+    plate_name : str
+        They 'Plate' key for the _Source index. If None, will default to the sheet name.
     
     Returns
     -------
@@ -164,6 +189,8 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None)
     
     wb = load_workbook(filename=in_file)
     sheet = wb[sheet_name]
+    if plate_name is None:
+        plate_name = sheet_name
     
     for row_ix, row in enumerate(sheet.iter_rows()):
         if "Time [s]" in str(row[0].value):
@@ -193,9 +220,9 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None)
         new_data["Time (s)"] += time_series
         new_data["Temp"] += temp_series
         
-        index += [cell_indexes[well] + (well,)] * len(ods)
+        index += [cell_indexes[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods)
     
-    index = pd.MultiIndex.from_tuples(index, names=list(index_names)+["Well"])
+    index = pd.MultiIndex.from_tuples(index, names=list(index_names)+["_Source"])
     
     new_df = pd.DataFrame(new_data, index=index).sort_index()
     
@@ -286,13 +313,6 @@ def plot_ods(
     if mean_indices is not None:
         # NB: mean_indices can be an empty sequence!
         df = avg_over_ixs(df, mean_indices)
-
-        # Averaging loses the "Well" index, which causes a dummy_z index to be
-        # created downstream, and that messes with the labels. We add a "synthetic"
-        # Well index for now, but it's just a stop-gap and needs to be handled.
-        # TODO: figure out our well/plate marking policy.
-        df["Well"] = ["-".join(str(j) for j in i) for i in df.index]
-        df.set_index("Well", append=True, inplace=True)
     else:
         # Work on a copy of the df, in case we'll need to modify it:
         df = df.copy()
@@ -307,17 +327,8 @@ def plot_ods(
         y_index = "_dummy_y"
         df[y_index] = ""
         df.set_index(y_index, append=True, drop=True, inplace=True)
-        
-    # The code expects at least one level beyond the x/y levels, and if it
-    # doesn't exist, create it as we did in case the x/y levels.
-    if len(df.index.levels) == 3: # 3 = x_index + y_index + Well
-        z_index = "_dummy_z"
-        df[z_index] = ""
-        prev_ixes = df.index.names
-        df.set_index(z_index, append=True, drop=True, inplace=True)
-        # The z_index should come before the well, since we will keep it
-        # and use .loc with it later on:
-        df = df.reorder_levels([z_index] + prev_ixes)
+    # In case any indices were added after _Source:
+    df = reorder_indices(df)
     
     x_labels = df.index.get_level_values(x_index).unique()
     y_labels = df.index.get_level_values(y_index).unique()
@@ -359,16 +370,11 @@ def plot_ods(
                 continue
             ax_df = df.xs((x_label, y_label), level=(x_index, y_index))
             
-            # The same condition can be run in several wells, and this gets
-            # special treatment in the condition loop. To set up the condition
-            # loop, we need to get all of the condition indexes, but without the
-            # well information.
-            if "Well" in ax_df.index.names:
-                # TODO: this assumes that the Well index is the last one
-                # (otherwise, the .loc won't work).
-                condition_ixs = ax_df.index.droplevel("Well").unique()
-            else:
-                condition_ixs = ax_df.index.unique()
+            # The same condition can come from several sources (e.g., wells),
+            # and this gets special treatment in the condition loop. To set up
+            # the condition loop, we need to get all of the condition indexes,
+            # but without the source information.
+            condition_ixs = ax_df.index.droplevel("_Source").unique()
                 
             for con_ix_count, con_ix in enumerate(condition_ixs):
                 con_df = ax_df.loc[con_ix]
@@ -385,11 +391,8 @@ def plot_ods(
                         std_dev_df = con_df["OD std"].reset_index()
                         std_dev_df["OD"] = std_dev_df["OD std"]
                     con_df["OD"] = con_df["OD mean"]
-                    con_df["Well"] = ""
-                    # TODO: the append=False assumes there are no more index levels.
-                    con_df.set_index("Well", append=False, drop=True, inplace=True)
                     
-                wells = con_df.index.get_level_values("Well").unique()
+                wells = con_df.index.get_level_values("_Source").unique()
                 
                 for well_ix, well in enumerate(wells):
                     well_df = con_df.loc[well]
@@ -482,6 +485,8 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
     pandas.DataFrame
         A new DataFrame, with `avg_levels` as the new MultiIndex, and three 
     """
+
+    df_in = reorder_indices(df_in, avg_levels) # Just in case the user hasn't.
     dfs_to_concat = []
     for exp_ix in df_in.index.droplevel([i for i in df_in.index.names if i not in avg_levels]).unique():
         # If avg_levels is only 1 level, exp_ix must be stored into a tuple
@@ -516,8 +521,15 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
         # TODO: is there a better way to set a single multi-index tuple into a dataframe?
         for level_name, level_value in zip(avg_levels, exp_ix):
             joined_df[level_name] = level_value
+
+        # NB: we set the number of averaged DataFrames as the _Source for ease of
+        # future debugging. However, there is an assumption here that averaged
+        # DataFrames will not be further concatenated, otherwise their _Source
+        # indices will clash, which might lead to issues if their logical indices
+        # also clash.
+        joined_df["_Source"] = f"Avg:{len(avg_dfs)}"
         
-        joined_df.set_index(list(avg_levels), inplace=True)
+        joined_df.set_index(list(avg_levels) + ["_Source"], inplace=True)
         dfs_to_concat.append(joined_df)
         
     return pd.concat(dfs_to_concat)
@@ -547,9 +559,39 @@ def xss(df, keys, levels, drop_singleton_levels=False):
     
     return result
 
+def _parse_source(df):
+    """Return a list of dicts which maps the Key:Val pairs in the _Source index.
+    """
+    
+    result = []
+
+    for ix in df.index.get_level_values("_Source"):
+        row_kvs = {}
+        for kv_pair in ix.split(';'):
+            if not kv_pair:
+                continue
+            k, v = kv_pair.split(":")
+            row_kvs[k] = v
+        result.append(row_kvs)
+
+    return result
+
+def reorder_indices(df, head=None):
+    """Return a new DataFrame with a new order of the indices, such that the
+    _Source index is last. Optionally, the first indices can be forced by the
+    `head` parameter.
+    """
+    if head is None:
+        head = []
+    ix_names = head + \
+        [n for n in df.index.names if n not in head and n != "_Source"] + \
+        ["_Source"]
+    return df.reorder_levels(ix_names)
+
 def add_row_col(df):
+    # Assumes the df comes from a single plate!
     result = df.copy()
-    well_values = result.index.get_level_values("Well")
+    well_values = [ix["Well"] for ix in _parse_source(df)]
     result["Row"] = [w[0] for w in well_values]
     result["Column"] = [w[1:] for w in well_values]
     result.set_index("Row", inplace=True, append=True)
@@ -558,8 +600,10 @@ def add_row_col(df):
     return result
 
 def plot_plate(df):
+    """NB: assumes the '_Source' index has a 'Well' key!"""
     return plot_ods(
-        add_row_col(df).sort_index(level="Column").sort_index(level="Row"), x_index="Column", y_index="Row", legend="every axes"
+        _reorder_indices(add_row_col(df).sort_index(level="Column").sort_index(level="Row")),
+        x_index="Column", y_index="Row", legend="every axes"
     )
 
 # Adapted from https://stackoverflow.com/a/56253636
@@ -612,7 +656,7 @@ def normalize_nominal_fit_df(nominal_fit_df, norm_func):
 
 # Additions for the SPARK stacker:
 
-def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
+def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000, plate_name=None):
     """Parse 96-well curves from a TECAN Spark Stacker.
     
     Format is the same as in `read_experiment`. At this time, however, the plate
@@ -626,6 +670,8 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
     
     wb = load_workbook(filename=fname)
     sheet = wb[sheet_name]
+    if plate_name is None:
+        plate_name = sheet_name
     
     index = []
     new_data = {
@@ -657,9 +703,9 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000):
                 new_data["Temp"].append(temp)
                 
                 well = f"{cell_value}{i}"
-                index.append(plate_map[well] + (well,))
+                index.append(plate_map[well] + (f"Plate:{plate_name};Well:{well};",))
     
-    index = pd.MultiIndex.from_tuples(index, names=list(keys)+["Well"])
+    index = pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
     
     return pd.DataFrame(new_data, index=index).sort_index()    
 
