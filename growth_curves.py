@@ -602,8 +602,9 @@ def add_row_col(df):
 def plot_plate(df):
     """NB: assumes the '_Source' index has a 'Well' key!"""
     return plot_ods(
-        _reorder_indices(add_row_col(df).sort_index(level="Column").sort_index(level="Row")),
-        x_index="Column", y_index="Row", legend="every axes"
+        reorder_indices(add_row_col(df).sort_index(level="Column").sort_index(level="Row")),
+        x_index="Column", y_index="Row", legend="every axes",
+        x_index_key=int
     )
 
 # Adapted from https://stackoverflow.com/a/56253636
