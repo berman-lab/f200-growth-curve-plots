@@ -231,6 +231,7 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None,
 def plot_ods(
     df,
     x_index=None, y_index=None, x_title=None, y_title=None,
+    x_index_grid=None,
     x_index_key=None, y_index_key=None,
     mean_indices=None,
     std_dev=None, # None, "bar", "area" -- must be used with mean_indices!
@@ -258,6 +259,11 @@ def plot_ods(
         The name of the level in `df`'s index to plot along the Y axis (rows)
         of the figure. The values of this level will be used as the title of
         the y axis for the first column of the Axes in the figure.
+    x_index_grid : sequence of sequences, optional
+        If no `y_index` is given, this allows to break the `x_index` across multiple
+        rows. Defines the logical layout of the figure according to the `x_index`
+        labels. For example, two rows of three drug concentrations in each row:
+        `[[0, 8, 16], [32, 64, 128]]`.
     x_title : str, optional
         If x_index is not specified, this will be used as the title of the
         first Axes in the figure.
@@ -325,13 +331,24 @@ def plot_ods(
         df.set_index(x_index, append=True, drop=True, inplace=True)
     if y_index is None:
         y_index = "_dummy_y"
-        df[y_index] = ""
+        if x_index_grid:
+            row_ixs = []
+            for ix in df.index.get_level_values(x_index):
+                for row_ix, row_vals in enumerate(x_index_grid):
+                    if ix in row_vals:
+                        row_ixs.append(row_ix)
+                        break
+            df[y_index] = row_ixs
+        else:
+            df[y_index] = ""
         df.set_index(y_index, append=True, drop=True, inplace=True)
     # In case any indices were added after _Source:
     df = reorder_indices(df)
     
     x_labels = df.index.get_level_values(x_index).unique()
     y_labels = df.index.get_level_values(y_index).unique()
+    if x_index_grid:
+        y_labels = sorted(y_labels)
 
     if x_index_key is not None:
         x_labels = list(sorted(x_labels, key=x_index_key))
@@ -340,26 +357,33 @@ def plot_ods(
     
     rows = len(y_labels)
     cols = len(x_labels)
+    if x_index_grid:
+        cols = max(len(r) for r in x_index_grid)
     
     fig, axs = plt.subplots(
         rows, cols, figsize=(cols*3*figsize_x_scale, rows*2*figsize_y_scale),
-        sharex=True, sharey=True, dpi=dpi
-        )
-    if rows == 1 and cols == 1:
-        axs = [[axs]]
-    elif rows == 1:
-        axs = [axs]
-    elif cols == 1:
-        axs = [[axs[i]] for i in range(len(axs))]
+        sharex=True, sharey=True, dpi=dpi,
+        squeeze=False, layout="compressed"
+    )
     
-    for ix, label in enumerate(x_labels):
-        axs[0][ix].set_title(x_title or label)
+    if x_index_grid:
+        for row_ix in range(len(x_index_grid)):
+            for ix, label in enumerate(x_index_grid[row_ix]):
+                axs[row_ix][ix].set_title(x_title or label)
+    else:
+        for ix, label in enumerate(x_labels):
+            axs[0][ix].set_title(x_title or label)
         
-    for ix, label in enumerate(y_labels):
-        axs[ix][0].set_ylabel(y_title or label)
+        for ix, label in enumerate(y_labels):
+            axs[ix][0].set_ylabel(y_title or label)
         
     for row_ix, y_label in enumerate(y_labels):
         for col_ix, x_label in enumerate(x_labels):
+            if x_index_grid:
+                if x_label not in x_index_grid[y_label]:
+                    continue
+                col_ix = x_index_grid[y_label].index(x_label)
+
             ax = axs[row_ix][col_ix]
             ax.xaxis.set_tick_params(which='both', labelbottom=True)
             
@@ -374,7 +398,13 @@ def plot_ods(
             # and this gets special treatment in the condition loop. To set up
             # the condition loop, we need to get all of the condition indexes,
             # but without the source information.
-            condition_ixs = ax_df.index.droplevel("_Source").unique()
+            # A potential problem is that if _Source is the last index (i.e.,
+            # there's only one curve per Axes), we can't drop it, so we have
+            # to test for it.
+            if ax_df.index.nlevels > 1:
+                condition_ixs = ax_df.index.droplevel("_Source").unique()
+            else:
+                condition_ixs = ax_df.index.unique()
                 
             for con_ix_count, con_ix in enumerate(condition_ixs):
                 con_df = ax_df.loc[con_ix]
