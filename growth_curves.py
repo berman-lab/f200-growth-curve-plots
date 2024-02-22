@@ -27,7 +27,7 @@ user to make sure those keys exist and are correct. It is possible that not all
 keys will exist in all DataFrames (e.g., the Well key can't remain after averaging).
 """
 
-def read_plate_key(in_file, sheet_name="Keys", converters=None):
+def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type=96):
     """Read the plate keys from a given sheet in an Excel file.
     
     The key sheet should consist of one or more **tables** separated by at
@@ -74,8 +74,9 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
     
     Parameters
     ----------
-    in_file : str
-        The path to the Excel file holding the keys.
+    in_file_or_wb : str or openpyxl.Workbook
+        The path to the Excel file holding the keys or said file already loaded
+        into an openpyxl Workbook.
     sheet_name : str, default: ``"Keys"``
         The sheet name of the sheet that holds the keys.
     converters : dict of str to callable, optional
@@ -94,17 +95,23 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
         key values (with the same length as the lengths of the returned `keys`).
         In the above example this would be ``{'A1': (1, 'YPD'), 'A2': (2, 'YPD'),
         'A3': (3, 'YPD'), 'B1': (1, 'SDC'), 'B2': (2, 'SDC'), 'B3': (3, 'SDC')}``.
+    plate_type : number, optional
+        The size of the plate - currently we support 96 and 384-well plates.
     """
     
-    rows = list("ABCDEFGH")
-    cols = list(range(1, 13))
+    assert plate_type in (96, 384)
+    rows = list("ABCDEFGH" if plate_type == 96 else "ABCDEFGHIJKLMNOP")
+    cols = list(range(1, 13 if plate_type == 96 else 25))
     if converters is None:
         converters = {}
     
     cells = [f"{r}{c}" for r, c in product(rows, cols)]
     result = {c: [] for c in cells}
     
-    wb = load_workbook(filename=in_file)
+    if isinstance(in_file_or_wb, str):
+        wb = load_workbook(filename=in_file_or_wb)
+    else:
+        wb = in_file_or_wb
     sheet = wb[sheet_name]
     
     keys = []
@@ -119,7 +126,7 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
                 df_rows = rows[:stop_ix-start_ix+1]
                 
                 df = pd.read_excel(
-                    in_file,
+                    wb,
                     sheet_name=sheet_name,
                     skiprows=start_ix,
                     header=None,
@@ -149,14 +156,15 @@ def read_plate_key(in_file, sheet_name="Keys", converters=None):
             start_ix = row_ix+1
             
     for key in list(result.keys()):
-        if not result[key]:
+        # A well label must exist in all keys for the well to be used:
+        if not result[key] or len(result[key]) < len(keys):
             del result[key]
         else:
             result[key] = tuple(result[key])
         
     return keys, result
 
-def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None, plate_name=None):
+def read_experiment(in_file_or_wb, sheet_name, key_sheet_name="Keys", converters=None, plate_name=None):
     """Parse plate growth curve data into a DataFrame.
     
     Reads the plate data along with the relevant keys (expected to be in the
@@ -167,8 +175,9 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None,
     
     Parameters
     ----------
-    in_file : str
-        The path to the Excel input file.
+    in_file_or_wb : str or openpyxl.Workbook
+        The path to the Excel input file or said input file already loaded into
+        an openpyxl Workbook.
     sheet_name : str
         The name of the sheet holding the plate data.
     key_sheet_name : str, default: ``"Keys"``
@@ -176,8 +185,8 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None,
     converters : dict, optional
         Converters for the key values, see the same parameter in the
         `read_plate_key` function.
-    plate_name : str
-        They 'Plate' key for the _Source index. If None, will default to the sheet name.
+    plate_name : str, optional
+        The 'Plate' key for the _Source index. If None, will default to the sheet name.
     
     Returns
     -------
@@ -185,9 +194,13 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None,
         The parsed OD measurements for the plate.
     """
     
-    index_names, cell_indexes = read_plate_key(in_file, key_sheet_name, converters)
+    index_names, cell_indexes = read_plate_key(in_file_or_wb, key_sheet_name, converters)
     
-    wb = load_workbook(filename=in_file)
+    if isinstance(in_file_or_wb, str):
+        wb = load_workbook(filename=in_file_or_wb)
+    else:
+        wb = in_file_or_wb
+
     sheet = wb[sheet_name]
     if plate_name is None:
         plate_name = sheet_name
@@ -197,7 +210,7 @@ def read_experiment(in_file, sheet_name, key_sheet_name="Keys", converters=None,
             break
     
     df = pd.read_excel(
-        in_file,
+        pd.ExcelFile(wb, engine="openpyxl"),
         sheet_name=sheet_name,
         skiprows=row_ix,
         header=None,
@@ -232,6 +245,7 @@ def plot_ods(
     df,
     x_index=None, y_index=None, x_title=None, y_title=None,
     x_index_grid=None,
+    x_col="Time (s)", y_col="OD",
     x_index_key=None, y_index_key=None,
     mean_indices=None,
     std_dev=None, # None, "bar", "area" -- must be used with mean_indices!
@@ -243,7 +257,8 @@ def plot_ods(
     alpha=1,
     figsize_x_scale=1,
     figsize_y_scale=1,
-    ax_func=None
+    ax_func=None,
+    sharey=True,
 ):
     """Plot the ODs from a DataFrame returned by `read_experiment`.
     
@@ -264,6 +279,12 @@ def plot_ods(
         rows. Defines the logical layout of the figure according to the `x_index`
         labels. For example, two rows of three drug concentrations in each row:
         `[[0, 8, 16], [32, 64, 128]]`.
+    x_col : str, optional
+        The column holding the x axis values for plotting. Default is 'Time (s)',
+        which will be converted to hours. No conversions will be done for other
+        values.
+    y_col : str, optional
+        The column holding the y axis values for plotting. Default is 'OD'.
     x_title : str, optional
         If x_index is not specified, this will be used as the title of the
         first Axes in the figure.
@@ -303,6 +324,9 @@ def plot_ods(
         A callable that takes three parameters: `ax, x_label, y_label`. `ax`
         is an Axes object, and `x_label` and `y_label` are its labels (indices).
         Used to plot extra things on individual Axes, e.g. 24-hour vertical lines.
+    sharey : bool or str, optional
+        Will be passed on to `plt.subplots`. It may be useful to only share the
+        y axis across rows (pass `"rows"`) or have no sharing at all (pass `False`).
     
     Returns
     -------
@@ -362,8 +386,8 @@ def plot_ods(
     
     fig, axs = plt.subplots(
         rows, cols, figsize=(cols*3*figsize_x_scale, rows*2*figsize_y_scale),
-        sharex=True, sharey=True, dpi=dpi,
-        squeeze=False, layout="compressed"
+        sharex=True, sharey=sharey, dpi=dpi,
+        squeeze=False, layout="compressed",
     )
     
     if x_index_grid:
@@ -438,8 +462,11 @@ def plot_ods(
                         # This will hide this entry from the legend:
                         style["label"] = f"_{style['label']}"
                     
-                    xs = well_df["Time (s)"] / 60 / 60
-                    ys = well_df["OD"]
+                    if x_col == "Time (s)":
+                        xs = well_df["Time (s)"] / 60 / 60
+                    else:
+                        xs = well_df[x_col]
+                    ys = well_df[y_col]
                     if not std_dev or std_dev == "area":
                         ax.plot(xs, ys, **style)
                         if std_dev == "area":
@@ -687,7 +714,7 @@ def normalize_nominal_fit_df(nominal_fit_df, norm_func):
 
 # Additions for the SPARK stacker:
 
-def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000, plate_name=None):
+def read_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, over=70000, plate_name=None, plate_type=96):
     """Parse 96-well curves from a TECAN Spark Stacker.
     
     Format is the same as in `read_experiment`. At this time, however, the plate
@@ -697,9 +724,17 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000, plate_
     ----------
     over : number
         If the reading is outside of the dynamic range, the Stacker will record
-        "OVER". This value will replace it. """
+        "OVER". This value will replace it.
+    plate_name : str, optional
+        The 'Plate' key for the _Source index. If None, will default to the sheet name.
+    plate_type : number, optional
+        The size of the plate - currently we support 96 and 384-well plates.
+    """
     
-    wb = load_workbook(filename=fname)
+    if isinstance(fname_or_wb, str):
+        wb = load_workbook(filename=fname_or_wb)
+    else:
+        wb = fname_or_wb
     sheet = wb[sheet_name]
     if plate_name is None:
         plate_name = sheet_name
@@ -711,20 +746,19 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000, plate_
         "Temp": [],
     }
         
+    assert plate_type in (96, 384)
+    row_num = 8 if plate_type == 96 else 8*2
+    col_num = 12 if plate_type == 96 else 12*2
+    
+    table_rows_to_read = 0
+    time = temp = None
     for row_ix, row in enumerate(sheet.iter_rows()):
         cell_value = row[0].value
-        if cell_value == "End Time":
-            break
-        elif cell_value is None or cell_value.strip() == "":
-            continue
-        elif cell_value == "Time [s]":
-            time = row[1].value
-        elif cell_value == "Temp. [°C]":
-            temp = row[1].value
-        elif cell_value in "ABCDEFGH":
-            for i in range(1, 13):
+        if table_rows_to_read > 0:
+            for i in range(1, col_num+1):
                 measurement_str = row[i].value
-                if measurement_str is None or measurement_str == "":
+                well = f"{cell_value}{i}"
+                if well not in plate_map:
                     continue
                 
                 # The Spark Stacker can give an "OVER" measurement if we're
@@ -733,8 +767,20 @@ def read_spark_experiment(fname, sheet_name, keys, plate_map, over=70000, plate_
                 new_data["Time (s)"].append(time)
                 new_data["Temp"].append(temp)
                 
-                well = f"{cell_value}{i}"
                 index.append(plate_map[well] + (f"Plate:{plate_name};Well:{well};",))
+
+            table_rows_to_read -= 1
+        if cell_value == "End Time":
+            break
+        elif cell_value is None or cell_value.strip() == "":
+            continue
+        elif cell_value == "Time [s]":
+            time = row[1].value
+        elif cell_value == "Temp. [°C]":
+            temp = row[1].value
+        elif cell_value == "<>":
+            # These will be read starting with the next iteration
+            table_rows_to_read = row_num
     
     index = pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
     
