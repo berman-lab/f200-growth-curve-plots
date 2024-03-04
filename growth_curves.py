@@ -3,6 +3,7 @@ from matplotlib import cm
 import pandas as pd
 from openpyxl import load_workbook
 from itertools import product
+import os
 
 """
 The DataFrame structure used for plotting:
@@ -867,3 +868,127 @@ def normalize_glucose(df):
 
     index = pd.MultiIndex.from_tuples(index, names=df.index.droplevel(["Glucose"]).names)
     return pd.DataFrame(diff_dict, index=index).sort_index()
+
+_FIG_LABEL = "FIGURE"
+_STOP_LABEL = "STOP"
+_GLOBAL_LABEL = "GLOBAL"
+_FORCE_LABEL = "FORCE"
+
+# TODO: document the configuration format for the configuration file.
+def make_plots_from_excel(df, excel_file, output_folder, sheet_name="Sheet1", draw_marked_only=False):
+    """Generate plots from an Excel configuration file.
+    
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame in the format returned by `read_experiment`-like functions.
+    excel_file : str
+        Path to the configuration Excel file.
+    output_folder : str
+        Path to the folder where the generated plots will be stored.
+    sheet_name : str, optional
+        The sheet name in the configuration file to read. Default: `Sheet1`.
+    draw_marked_only : bool, optional
+        Specifies if only figures marked with a "FORCE" flag should be generated.
+        Default: `False` (generates all figures).
+    """
+    
+    global_params = {}
+
+    wb = load_workbook(excel_file)
+    sheet = wb[sheet_name]
+
+    row_ix = 1
+    while row_ix <= sheet.max_row:
+        lead_value = sheet.cell(row_ix, 1).value
+        if not lead_value:
+            row_ix += 1
+            continue
+
+        lead_value = lead_value.upper()
+        if lead_value == _STOP_LABEL:
+            break
+        elif lead_value == _FIG_LABEL:
+            fig_name = sheet.cell(row_ix, 2).value
+            (fig_df, params), row_ix = _parse_figure(sheet, row_ix+1)
+            if draw_marked_only and _FORCE_LABEL not in params:
+                continue
+            if _FORCE_LABEL in params:
+                del params[_FORCE_LABEL]
+            
+            kws = global_params.copy()
+            kws.update(params)
+            fig = plot_ods(
+                df.loc[fig_df.index],
+                style_func=_style_func_by_df(fig_df),
+                **kws
+            )
+            fig.savefig(os.path.join(output_folder, f"{fig_name}.png"))
+            plt.close(fig)
+        elif lead_value == _GLOBAL_LABEL:
+            global_params, row_ix = _parse_params(sheet, row_ix+1)
+        else:
+            row_ix += 1
+
+# Returns (result, next_ix)
+def _parse_params(sheet, row_ix):
+    result = {}
+
+    while row_ix <= sheet.max_row:
+        lead_value = sheet.cell(row_ix, 1).value
+        if not lead_value:
+            row_ix += 1
+            continue
+
+        if lead_value.upper() in (_FIG_LABEL, _STOP_LABEL, _GLOBAL_LABEL):
+            break
+
+        param_name = lead_value
+        if param_name != "x_index_grid":
+            param_value = sheet.cell(row_ix, 2).value
+            row_ix += 1
+        else:
+            grid = param_value = []
+            row_ix += 1
+            while True:
+                lead_value = sheet.cell(row_ix, 1).value
+                if lead_value is None:
+                    break
+
+                row = [lead_value]
+                col_ix = 2
+                while True:
+                    value = sheet.cell(row_ix, col_ix).value
+                    if not value:
+                        break
+                    row.append(value)
+                    col_ix += 1
+                row = [None if i == "_" else i for i in row]
+                grid.append(row)
+                row_ix += 1
+
+        result[param_name] = param_value
+
+    return result, row_ix
+
+def _parse_figure(sheet, row_ix):
+    start_row_ix = row_ix
+    while sheet.cell(row_ix, 1).value is not None and row_ix <= sheet.max_row:
+        row_ix += 1
+    
+    df = pd.read_excel(
+        pd.ExcelFile(sheet.parent, engine="openpyxl"),
+        sheet_name=sheet.title,
+        skiprows=start_row_ix-1,
+        nrows=row_ix-start_row_ix-1,
+        index_col=0,
+    )
+
+    params, row_ix = _parse_params(sheet, row_ix)
+
+    return (df, params), row_ix
+
+def _style_func_by_df(df):
+    def _style_func(x_label, y_label, ix):
+        return df.loc[ix].dropna().to_dict()
+    return _style_func
