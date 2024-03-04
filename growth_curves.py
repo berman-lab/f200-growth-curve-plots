@@ -259,6 +259,7 @@ def plot_ods(
     figsize_y_scale=1,
     ax_func=None,
     sharey=True,
+    legend_ncol=1,
 ):
     """Plot the ODs from a DataFrame returned by `read_experiment`.
     
@@ -499,9 +500,15 @@ def plot_ods(
             if legend == "every axes":
                 legend_without_duplicate_labels(
                     ax,
-                    fontsize=8, loc='upper left'
+                    fontsize=8, loc='upper left',
+                    ncol=legend_ncol
                 )
-    
+
+    for ax_row in axs:
+        for ax in ax_row:
+            if not ax.lines and not ax.collections:
+                ax.set_axis_off()
+
     if legend == "last col":
         for ax_row in axs:
             # TODO: this gives a warning if some of the Axes on the row have no
@@ -510,7 +517,8 @@ def plot_ods(
             legend_without_duplicate_labels(
                 ax_row[-1],
                 bbox_to_anchor=(1.05, 1),
-                loc='upper left', borderaxespad=0., fontsize=6
+                loc='upper left', borderaxespad=0., fontsize=6,
+                ncol=legend_ncol
             )
     
     return fig
