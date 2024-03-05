@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import pandas as pd
+import openpyxl
 from openpyxl import load_workbook
 from itertools import product
 import os
@@ -109,10 +110,7 @@ def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type
     cells = [f"{r}{c}" for r, c in product(rows, cols)]
     result = {c: [] for c in cells}
     
-    if isinstance(in_file_or_wb, str):
-        wb = load_workbook(filename=in_file_or_wb)
-    else:
-        wb = in_file_or_wb
+    wb = _get_workbook(in_file_or_wb)
     sheet = wb[sheet_name]
     
     keys = []
@@ -165,116 +163,109 @@ def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type
         
     return keys, result
 
-def read_experiment(in_file_or_wb, sheet_name, key_sheet_name="Keys", converters=None, plate_name=None):
+def _get_workbook(in_file_or_wb):
+    if isinstance(in_file_or_wb, openpyxl.Workbook):
+        return in_file_or_wb
+    else:
+        return load_workbook(filename=in_file_or_wb)
+
+def read_od_sheet(
+    in_file_or_wb, od_sheet_name, format, key_sheet_name,
+    converters=None, plate_name=None, plate_type=96, over=70000
+):
     """Parse plate growth curve data into a DataFrame.
     
     Reads the plate data along with the relevant keys (expected to be in the
     same workbook). The DataFrame will have a MultiIndex over the rows as
-    parsed from the `key_sheet_name` sheet, with the last level called "Well"
-    and storing the well information. The columns are "Time (s)", "OD" and
-    "Temp" (temperature).
+    parsed from the `key_sheet_name` sheet, with the last level called "_Source"
+    and storing the plate and well information. The columns are "Time (s)", "OD"
+    and "Temp" (temperature).
     
     Parameters
     ----------
     in_file_or_wb : str or openpyxl.Workbook
         The path to the Excel input file or said input file already loaded into
         an openpyxl Workbook.
-    sheet_name : str
+    od_sheet_name : str
         The name of the sheet holding the plate data.
-    key_sheet_name : str, default: ``"Keys"``
+    format : str
+        The format of the OD sheet. Currently we support: `f200`, `spark`,
+        `spark stacker`.
+    key_sheet_name : str
         The name of the sheet holding the key definitions.
     converters : dict, optional
         Converters for the key values, see the same parameter in the
         `read_plate_key` function.
     plate_name : str, optional
-        The 'Plate' key for the _Source index. If None, will default to the sheet name.
-    
+        The 'Plate' key for the _Source index. If `None`, will default to
+        `od_sheet_name`.
+    plate_type : number, optional
+        The size of the plate - currently we support 96 and 384-well plates.
+        Only relevant for the `spark stacker` format.
+    over : number
+        If the reading is outside of the dynamic range, the Stacker will record
+        "OVER". This value will replace it. Only relevant for the
+        `spark stacker` format.
+
     Returns
     -------
     pandas.DataFrame
         The parsed OD measurements for the plate.
     """
-    
-    index_names, cell_indexes = read_plate_key(in_file_or_wb, key_sheet_name, converters)
-    
-    if isinstance(in_file_or_wb, str):
-        wb = load_workbook(filename=in_file_or_wb)
-    else:
-        wb = in_file_or_wb
 
-    sheet = wb[sheet_name]
-    if plate_name is None:
-        plate_name = sheet_name
+    wb = _get_workbook(in_file_or_wb)
+    keys, plate_map = read_plate_key(wb, key_sheet_name, converters, plate_type)
+    return read_od_sheet_with_plate_map(wb, od_sheet_name, keys, plate_map, format, plate_name, plate_type, over)
     
+def read_od_sheet_with_plate_map(
+    in_file_or_wb, od_sheet_name, keys, plate_map, format,
+    plate_name=None, plate_type=96, over=70000
+):
+    if plate_name is None:
+        plate_name = od_sheet_name
+
+    sheet = _get_workbook(in_file_or_wb)[od_sheet_name]
+    new_data = { "OD": [], "Time (s)": [], "Temp": [] }
+    index = []
+
+    if format == "f200":
+        read_od_sheet_f200(sheet, plate_map, plate_name, new_data, index)
+    elif format == "spark":
+        read_od_sheet_spark(sheet, plate_map, plate_name, new_data, index)
+    elif format == "spark stacker":
+        read_od_sheet_spark_stacker(sheet, plate_map, plate_name, plate_type, new_data, index, over)
+    else:
+        assert False, "OD sheet format is not recognized"
+
+    return pd.DataFrame(
+        new_data,
+        index=pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
+    ).sort_index()
+
+def read_od_sheet_f200(sheet, plate_map, plate_name, data_dict, index):
     for row_ix, row in enumerate(sheet.iter_rows()):
         if "Time [s]" in str(row[0].value):
             break
     
     df = pd.read_excel(
-        pd.ExcelFile(wb, engine="openpyxl"),
-        sheet_name=sheet_name,
+        sheet.parent, engine="openpyxl",
+        sheet_name=sheet.title,
         skiprows=row_ix,
         header=None,
     ).dropna(axis=0, how="all").dropna(axis=1, how="all").iloc[:-1,:]
     
     time_series = list(df.iloc[0,1:])
     temp_series = list(df.iloc[1,1:])
-    
-    new_data = {
-        "OD": [],
-        "Time (s)": [],
-        "Temp": [],
-    }
-    
-    index = []
-    for well_ix, well in enumerate(df.iloc[2:,0]):
-        ods = list(df.iloc[well_ix+2,1:])
-        
-        new_data["OD"] += ods
-        new_data["Time (s)"] += time_series
-        new_data["Temp"] += temp_series
-        
-        index += [cell_indexes[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods)
-    
-    index = pd.MultiIndex.from_tuples(index, names=list(index_names)+["_Source"])
-    
-    new_df = pd.DataFrame(new_data, index=index).sort_index()
-    
-    return new_df
 
-def read_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, over=70000, plate_name=None, plate_type=96):
-    """Parse 96-well curves from a TECAN Spark Stacker.
-    
-    Format is the same as in `read_experiment`. At this time, however, the plate
-    keymap needs to be passed separately.
-    
-    Parameters
-    ----------
-    over : number
-        If the reading is outside of the dynamic range, the Stacker will record
-        "OVER". This value will replace it.
-    plate_name : str, optional
-        The 'Plate' key for the _Source index. If None, will default to the sheet name.
-    plate_type : number, optional
-        The size of the plate - currently we support 96 and 384-well plates.
-    """
-    
-    if isinstance(fname_or_wb, str):
-        wb = load_workbook(filename=fname_or_wb)
-    else:
-        wb = fname_or_wb
-    sheet = wb[sheet_name]
-    if plate_name is None:
-        plate_name = sheet_name
-    
-    index = []
-    new_data = {
-        "OD": [],
-        "Time (s)": [],
-        "Temp": [],
-    }
+    for well_ix, well in enumerate(df.iloc[2:,0]):
+        data_dict["OD"] += list(df.iloc[well_ix+2,1:])
+        data_dict["Time (s)"] += time_series
+        data_dict["Temp"] += temp_series
         
-    assert plate_type in (96, 384)
+        index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(time_series)
+
+def read_od_sheet_spark_stacker(sheet, plate_map, plate_name, plate_type, data_dict, index, over):
+    assert plate_type in (96, 384), "Plate type can only be 96 or 384"
     row_num = 8 if plate_type == 96 else 8*2
     col_num = 12 if plate_type == 96 else 12*2
     
@@ -291,9 +282,9 @@ def read_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, over=70000, 
                 
                 # The Spark Stacker can give an "OVER" measurement if we're
                 # outside of the dynamic range:
-                new_data["OD"].append(float(measurement_str) if measurement_str != "OVER" else over)
-                new_data["Time (s)"].append(time)
-                new_data["Temp"].append(temp)
+                data_dict["OD"].append(float(measurement_str) if measurement_str != "OVER" else over)
+                data_dict["Time (s)"].append(time)
+                data_dict["Temp"].append(temp)
                 
                 index.append(plate_map[well] + (f"Plate:{plate_name};Well:{well};",))
 
@@ -309,27 +300,8 @@ def read_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, over=70000, 
         elif cell_value == "<>":
             # These will be read starting with the next iteration
             table_rows_to_read = row_num
-    
-    index = pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
-    
-    return pd.DataFrame(new_data, index=index).sort_index()
 
-def read_non_stacker_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, plate_name=None):
-    if isinstance(fname_or_wb, str):
-        wb = load_workbook(filename=fname_or_wb)
-    else:
-        wb = fname_or_wb
-    sheet = wb[sheet_name]
-    if plate_name is None:
-        plate_name = sheet_name
-    
-    index = []
-    new_data = {
-        "OD": [],
-        "Time (s)": [],
-        "Temp": [],
-    }
-
+def read_od_sheet_spark(sheet, plate_map, plate_name, data_dict, index):
     for row_ix, row in enumerate(sheet.iter_rows()):
         cell_value = row[0].value
         if cell_value == "STOP" or cell_value == "End Time":
@@ -359,15 +331,11 @@ def read_non_stacker_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, 
 
                 assert len(ods_row) == len(row_values) == len(temp_row)
 
-                new_data["OD"] += ods_row
-                new_data["Time (s)"] += [int(t)/1000 for t in row_values]
-                new_data["Temp"] += temp_row
+                data_dict["OD"] += ods_row
+                data_dict["Time (s)"] += [int(t)/1000 for t in row_values]
+                data_dict["Temp"] += temp_row
 
                 index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods_row)
-    
-    index = pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
-    
-    return pd.DataFrame(new_data, index=index).sort_index()
 
 def plot_ods(
     df,
