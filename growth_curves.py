@@ -85,6 +85,8 @@ def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type
         names, while the dict values are callables that take the string value
         from the sheet and convert it to the correct value for further
         processing in Python.
+    plate_type : number, optional
+        The size of the plate - currently we support 96 and 384-well plates.
     
     Returns
     -------
@@ -96,8 +98,6 @@ def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type
         key values (with the same length as the lengths of the returned `keys`).
         In the above example this would be ``{'A1': (1, 'YPD'), 'A2': (2, 'YPD'),
         'A3': (3, 'YPD'), 'B1': (1, 'SDC'), 'B2': (2, 'SDC'), 'B3': (3, 'SDC')}``.
-    plate_type : number, optional
-        The size of the plate - currently we support 96 and 384-well plates.
     """
     
     assert plate_type in (96, 384)
@@ -309,6 +309,61 @@ def read_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, over=70000, 
         elif cell_value == "<>":
             # These will be read starting with the next iteration
             table_rows_to_read = row_num
+    
+    index = pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
+    
+    return pd.DataFrame(new_data, index=index).sort_index()
+
+def read_non_stacker_spark_experiment(fname_or_wb, sheet_name, keys, plate_map, plate_name=None):
+    if isinstance(fname_or_wb, str):
+        wb = load_workbook(filename=fname_or_wb)
+    else:
+        wb = fname_or_wb
+    sheet = wb[sheet_name]
+    if plate_name is None:
+        plate_name = sheet_name
+    
+    index = []
+    new_data = {
+        "OD": [],
+        "Time (s)": [],
+        "Temp": [],
+    }
+
+    for row_ix, row in enumerate(sheet.iter_rows()):
+        cell_value = row[0].value
+        if cell_value == "STOP" or cell_value == "End Time":
+            break
+        elif cell_value in ("Temp. [°C]", "Time [ms]") or cell_value in plate_map:
+            # First, read the row until the end:
+            row_values = []#[int(c.value) for c in row[1:]]
+            for next_cell in row[1:]:
+                next_value = next_cell.value
+                if next_value is None or str(next_value).strip() == "":
+                    break
+                row_values.append(next_value)
+            
+            # Then decide what to do with it:
+            if cell_value == "Temp. [°C]":
+                temp_row = row_values
+            elif cell_value in plate_map:
+                # Will be skipped if cell_value is not in plate map!
+                well = cell_value
+                ods_row = row_values
+            else:
+                assert cell_value == "Time [ms]"
+
+                # The well could be empty, in which case we ignore it:
+                if len(row_values) == 0:
+                    continue
+
+                assert len(ods_row) == len(row_values) == len(temp_row)
+
+                new_data["OD"] += ods_row
+                new_data["Time (s)"] += [int(t)/1000 for t in row_values]
+                new_data["Temp"] += temp_row
+
+                index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods_row)
     
     index = pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
     
