@@ -6,6 +6,10 @@ from openpyxl import load_workbook
 from itertools import product
 import os
 
+################################################################################
+# Reading the data
+################################################################################
+
 """
 The DataFrame structure used for plotting:
 
@@ -336,6 +340,74 @@ def read_od_sheet_spark(sheet, plate_map, plate_name, data_dict, index):
                 data_dict["Temp"] += temp_row
 
                 index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods_row)
+
+################################################################################
+# Reading utilities
+################################################################################
+
+def read_384_htl(fname, plate_start, key_start, num_of_plates=9, extra_source=None):
+    wb = load_workbook(fname)
+
+    dfs_to_concat = []
+    
+    for i in range(num_of_plates):
+        
+        keys, plate_map = read_plate_key(wb, f"Plate {key_start+i} keys", plate_type=384)
+        df = read_od_sheet_with_plate_map(wb, f"Plate {plate_start+i}", keys, plate_map, "spark stacker",
+                                          plate_type=384, plate_name=f"Plate {plate_start+i:02}",)
+        dfs_to_concat.append(df)
+    
+    result = pd.concat(dfs_to_concat).sort_index()
+
+    if extra_source:
+        result = result.reset_index("_Source")
+        result["_Source"] = extra_source + result["_Source"]
+        result = result.set_index("_Source", append=True)
+
+    return result
+
+# TODO: refactor read_384_htl into read_384_htl_with_origin
+# The origin is useful when comparing wells between different experiments that
+# came from the same thawed spot.
+def read_384_htl_with_origin(fname, plate_start, key_start, num_of_plates=9, extra_source=None):
+    wb = load_workbook(fname)
+
+    dfs_to_concat = []
+
+    from string import ascii_uppercase
+    from math import ceil
+    from growth_curves import _parse_source
+    for i in range(num_of_plates):
+        
+        keys, plate_map = read_plate_key(wb, f"Plate {key_start+i} keys", plate_type=384)
+        df = read_od_sheet_with_plate_map(wb, f"Plate {plate_start+i}", keys, plate_map, "spark stacker",
+                                          plate_type=384, plate_name=f"Plate {plate_start+i:02}",)
+
+        wells = [p["Well"] for p in _parse_source(df)]
+        row_coords = [ceil((ascii_uppercase.index(w[0])+1) / 2) for w in wells]
+        unique_row_num = len(set(row_coords))
+        col_coords = [ceil(int(w[1:]) / 2) for w in wells]
+        # TODO: assumes the growth curve plates come in consecutive batches of 3 per origin plate.
+        # 24: cols in a row
+        # 1000: arbtirary decision, as long as it's >=384 it's good. 1000 was chosen for ease 
+        # of debugging (since the origins shouldn't exceed 3 
+        df["Origin"] = [c + (r-1) * 24 + 1000*(i//3) for r, c in zip(row_coords, col_coords)]
+        df = reorder_indices(df.set_index("Origin", append=True))
+        
+        dfs_to_concat.append(df)
+    
+    result = pd.concat(dfs_to_concat).sort_index()
+
+    if extra_source:
+        result = result.reset_index("_Source")
+        result["_Source"] = extra_source + result["_Source"]
+        result = result.set_index("_Source", append=True)
+
+    return result
+
+################################################################################
+# Plotting the data
+################################################################################
 
 def plot_ods(
     df,
@@ -699,27 +771,6 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
 def style_func(x_label, y_label, ax_index):
     return {"label": "", "color": "", "linestyle": ""}
 
-def xss(df, keys, levels, drop_singleton_levels=False):
-    level_ixs = [df.index.names.index(l) for l in levels]
-    index_dict = {l_ix: vs for (l_ix, vs) in zip(level_ixs, keys)}
-    
-    def test_index(index):
-        for index_ix, index_value in enumerate(index):
-            if index_ix in index_dict:
-                if index_value not in index_dict[index_ix]:
-                    return False
-        
-        return True
-    
-    result = df.loc[df.index.map(test_index)]
-    
-    if drop_singleton_levels:
-        for level_ix in range(result.index.nlevels-1, -1, -1):
-            if len(result.index.get_level_values(level_ix).unique()) <= 1:
-                result = result.droplevel(level_ix)
-    
-    return result
-
 def _parse_source(df):
     """Return a list of dicts which maps the Key:Val pairs in the _Source index.
     """
@@ -773,6 +824,35 @@ def legend_without_duplicate_labels(ax, **kws):
     handles, labels = ax.get_legend_handles_labels()
     unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
     ax.legend(*zip(*unique), **kws)
+    
+################################################################################
+# Utilities
+################################################################################
+
+def xss(df, keys, levels, drop_singleton_levels=False):
+    level_ixs = [df.index.names.index(l) for l in levels]
+    index_dict = {l_ix: vs for (l_ix, vs) in zip(level_ixs, keys)}
+    
+    def test_index(index):
+        for index_ix, index_value in enumerate(index):
+            if index_ix in index_dict:
+                if index_value not in index_dict[index_ix]:
+                    return False
+        
+        return True
+    
+    result = df.loc[df.index.map(test_index)]
+    
+    if drop_singleton_levels:
+        for level_ix in range(result.index.nlevels-1, -1, -1):
+            if len(result.index.get_level_values(level_ix).unique()) <= 1:
+                result = result.droplevel(level_ix)
+    
+    return result    
+
+################################################################################
+# Configurable plotting from Excel
+################################################################################
 
 _FIG_LABEL = "FIGURE"
 _STOP_LABEL = "STOP"

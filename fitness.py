@@ -1,6 +1,7 @@
 import pandas as pd
 from growth_curves import reorder_indices, xss
 from itertools import product
+import numpy as np
 
 def get_curveball_fitness(df, with_tqdm=False, models=None):
     import curveball
@@ -170,3 +171,147 @@ def normalize_glucose(df):
 
     index = pd.MultiIndex.from_tuples(index, names=df.index.droplevel(["Glucose"]).names)
     return pd.DataFrame(diff_dict, index=index).sort_index()
+
+################################################################################
+# Utilities
+################################################################################
+
+# Sanitizing the growth curves before fitness estimations is strongly recommended.
+# Artifacts in reading the OD can really mess with naive estimators.
+
+def sanitize_growth_curves(df):
+    result = df.copy()
+    
+    # For some reason, sometimes a few of the first readings have a high OD, which then collapses back to the baseline.
+    # We should filter them out:
+    ### This version looks for the first cutoff after which the ODs are monotonically rising.
+    ### This can cut most of the 'EMPTY' curves, which can create problems for the fitness estimations.
+    ### We could filter them out, but it's best to think of another method of filtering.
+    # def filter_spikes(df):
+    #     min_od = df["OD"].min()
+    #     ix_cutoff = 0
+    #     for od in df["OD"]:
+    #         # if od > min_od * 1.5:
+    #         if od > min_od:
+    #             ix_cutoff += 1
+    #         else:
+    #             break
+    #     if ix_cutoff == 0:
+    #         return df
+    #     else:
+    #         # if ix_cutoff > 2:
+    #         #     print(df.index[0], ix_cutoff)
+    #         return df.iloc[ix_cutoff:]
+
+    # This method cuts the first monotonically decreasing portion:
+    def filter_spikes(df):
+        diff = df["OD"].iloc[:-1] > df["OD"].iloc[1:]
+        ix_cutoff = diff.argmin()
+        return df.iloc[ix_cutoff:]
+
+    # TODO For some reason, an index level is added which is just the tuple of all other indices?!
+    result = result.groupby(result.index).apply(filter_spikes).reset_index(level=0, drop=True)
+    
+    return result
+
+################################################################################
+# Model-free fitness
+################################################################################
+
+# Nominal fitness 
+
+def get_model_free_fitness_single(df, lag_threshold=2, plot=False):
+    # Assumes `df` contains a single growth curve.
+    # Returns the following columns:
+    # * Max OD
+    # * Lag (s)
+    # * Lag (hr) # Given in hours, rounded to 2 decimal points.
+    # * Max slope
+    # * Max slope (smoothed) # The max slope of the growth curve after smoothing (see code for reference).
+    result = {}
+    
+    result["Lag (s)"] = result["Lag (hr)"] = None
+    cutoff_ods = df["OD"] >= df["OD"].min() * lag_threshold
+    if cutoff_ods.any():
+        # We want the first timepoint so that all subsequent ODs will be bigger than the cutoff.
+        # result["Lag"] = df[ df["OD"] >= media_od_cutoffs[media] ]["Time (s)"].iloc[0] /60/60
+        s = (~cutoff_ods).reset_index()["OD"]
+
+        # The first numerical index of the timepoint where the OD is always larger than the cutoff:
+        tt_od_index = s.where(s).last_valid_index()+1
+        if tt_od_index < len(df):
+            result["Lag (s)"] = df.iloc[tt_od_index]["Time (s)"]
+            result["Lag (hr)"] = round(result["Lag (s)"] / 60 / 60, 2) # In hours, rounded, for convenience.
+
+    result["Max OD"] = df["OD"].max()
+
+    slope = np.gradient(df["OD"])
+    result["Max slope"] = slope.max()
+
+    # Because of potential "jumps" in the growth curve, we smooth it and recalculate the slope.
+    # Parameters chosen empirically.
+    from scipy.signal import savgol_filter
+    try:
+        smooth_od = savgol_filter(df["OD"], 10, 3)
+    except:
+        print(df.index.unique())
+        raise
+    result["Max slope (smoothed)"] = np.gradient(smooth_od).max()
+
+    if plot:
+        import matplotlib.pyplot as plt
+        fig, axs = plt.subplots(nrows=3, figsize=(10, 10))
+        axs[0].set_title(f"{df.index.unique().get_level_values(0)[0]} {df.index.unique().get_level_values(1)[0]}")
+        axs[0].plot(range(len(df)), df["OD"], color="blue")
+        axs[0].plot(range(len(df)), smooth_od, color="red")
+        axs[1].plot(range(len(slope)), slope, color="blue")
+        axs[1].plot(range(len(slope)), np.gradient(smooth_od), color="red")
+        axs[2].plot(range(len(slope)), np.gradient(slope))
+    
+    return pd.Series(result)
+
+def get_model_free_fitness_df(df):
+    return df.groupby(df.index.names).apply(get_model_free_fitness_single)
+
+
+################################################################################
+# MICs
+################################################################################
+
+def get_mic_distributions(df, timepoint=24, inhibition=0.5):
+    df_flc0 = df.xs(0, level="FLC")["OD"]
+    gb_obj = df_flc0.groupby(df_flc0.index.names)
+    target_ods_series = (gb_obj.max() + gb_obj.min()) * (1-inhibition)
+    target_ods_series = target_ods_series.groupby(level=target_ods_series.index.names.difference(["_Source"])).mean()
+    
+    timepoints_series = df[["Time (s)"]].groupby(df.index.names).agg( (lambda x: x[x > timepoint*60*60].iloc[0]) ).set_index("Time (s)", append=True)
+    ods_at_timepoint_series = df.set_index("Time (s)", append=True)["OD"].loc[timepoints_series.index].reset_index(level="Time (s)", drop=True)
+    # TODO: we have to remove the "FLC" column when accessing target_ods_series, currently assuming it's the second column.
+    is_below_target_od_series = ods_at_timepoint_series.to_frame().apply(lambda x: x[0] < target_ods_series.loc[x.name[:1] + x.name[2:-1]], axis=1)
+    
+    gb_obj = is_below_target_od_series.groupby(is_below_target_od_series.index.names.difference(["_Source"]))
+    mics_df = (gb_obj.sum() / gb_obj.count()).unstack(level="FLC")
+
+    return mics_df
+
+def get_mic_ranges(df, threshold=1, agg_col=None):
+    flcs = df.columns
+    max_flc = max(flcs)
+    min_flc = flcs[1]
+    over_flc = max_flc+1
+        
+    result = df.apply(lambda x: x.idxmax() if x.max() >= threshold else over_flc, axis=1)
+
+    def flc_to_mic(flc):
+        return "0?" if flc == 0 else f"<{flc}" if flc == min_flc else f">{max_flc}" if flc == over_flc else flc
+    
+    if agg_col is not None:
+        result = result.groupby(result.index.names.difference([agg_col])).\
+            agg(
+                from_mic=lambda x: flc_to_mic(x.min()),
+                to_mic=lambda x: flc_to_mic(x.max())
+            )
+    else:
+        result = result.apply(flc_to_mic)
+    
+    return result
