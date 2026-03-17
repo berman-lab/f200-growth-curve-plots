@@ -5,6 +5,7 @@ import openpyxl
 from openpyxl import load_workbook
 from itertools import product
 import os
+import numpy
 
 ################################################################################
 # Reading the data
@@ -194,7 +195,7 @@ def read_od_sheet(
         The name of the sheet holding the plate data.
     format : str
         The format of the OD sheet. Currently we support: `f200`, `spark`,
-        `spark stacker`.
+        `spark stacker`, `biorad qpcr`.
     key_sheet_name : str
         The name of the sheet holding the key definitions.
     converters : dict, optional
@@ -238,13 +239,17 @@ def read_od_sheet_with_plate_map(
         read_od_sheet_spark(sheet, plate_map, plate_name, new_data, index)
     elif format == "spark stacker":
         read_od_sheet_spark_stacker(sheet, plate_map, plate_name, plate_type, new_data, index, over)
+    elif format == "biorad qpcr":
+        read_od_sheet_biorad_qpcr(sheet, plate_map, plate_name, new_data, index)
     else:
         assert False, "OD sheet format is not recognized"
 
+    # NB: the dropna() is required in case we had to read in an empty well from the SPARK stacker
+    # (it keeps unread wells, but doesn't give them any values, resulting in NaNs).
     return pd.DataFrame(
         new_data,
         index=pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
-    ).sort_index()
+    ).dropna().sort_index()
 
 def read_od_sheet_f200(sheet, plate_map, plate_name, data_dict, index):
     for row_ix, row in enumerate(sheet.iter_rows()):
@@ -285,8 +290,14 @@ def read_od_sheet_spark_stacker(sheet, plate_map, plate_name, plate_type, data_d
                     continue
                 
                 # The Spark Stacker can give an "OVER" measurement if we're
-                # outside of the dynamic range:
-                data_dict["OD"].append(float(measurement_str) if measurement_str != "OVER" else over)
+                # outside of the dynamic range. It also records the entire plate,
+                # so wells that were not measured will be empty but can still be
+                # read if the plate key is not sufficiently conservative (which
+                # can happen in certain scenarios). We convert these to NaN.
+                try:
+                    data_dict["OD"].append(float(measurement_str) if measurement_str != "OVER" else over)
+                except ValueError:
+                    data_dict["OD"].append(numpy.nan)
                 data_dict["Time (s)"].append(time)
                 data_dict["Temp"].append(temp)
                 
@@ -340,6 +351,25 @@ def read_od_sheet_spark(sheet, plate_map, plate_name, data_dict, index):
                 data_dict["Temp"] += temp_row
 
                 index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods_row)
+
+
+def read_od_sheet_biorad_qpcr(sheet, plate_map, plate_name, data_dict, index):
+    for row_ix, row in enumerate(sheet.iter_rows()):
+        if row_ix == 0:
+            # Header row
+            # TODO: is this fixed? In a sample file, col A is always empty, col B is 'Cycle', and the rest are the enumerated wells.
+            wells = [c.value for c in row[2:]]
+            continue
+        
+        elif row[1].value is None or str(row[1].value).strip() == "":
+            break
+        
+        # NB: values are not really in the reported units, but we keep them for consistency with other formats
+        data_dict["Time (s)"] += [int(row[1].value)*60*60] * len(wells) # Make every cycle as if it's an hour, for the plot_ods to play nicely downstream
+        data_dict["Temp"] += ["N/A"] * len(wells)
+        data_dict["OD"] += [int(c.value) for c in row[2:]]
+
+        index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",) for well in wells]
 
 ################################################################################
 # Reading utilities
