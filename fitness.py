@@ -315,3 +315,122 @@ def get_mic_ranges(df, threshold=1, agg_col=None):
         result = result.apply(flc_to_mic)
     
     return result
+
+try:
+    from gooey import Gooey, GooeyParser
+except ImportError:
+    # If gooey isn't installed, provide no-op replacements so the script still runs.
+    def Gooey(*args, **kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
+
+    import argparse
+    GooeyParser = argparse.ArgumentParser
+
+# A kind of a fix for dark mode:
+# item_default = {
+#         'error_color': '#ea7878',
+#         'label_color': '#ffffff',
+#         'help_color': '#363636',
+#         'full_width': False,
+#         'validator': {
+#             'type': 'local',
+#             'test': 'lambda x: True',
+#             'message': ''
+#         },
+#         'external_validator': {
+#             'cmd': '',
+#         }
+#     }
+# @Gooey(dump_build_config=True,
+#         program_name="Widget Demo",
+#         advanced=True,
+#         auto_start=False,
+#         body_bg_color='#262626',
+#         header_bg_color='#262626',
+#         footer_bg_color='#262626',
+#         sidebar_bg_color='#262626',
+#         )
+@Gooey
+def main():
+    import argparse
+    from openpyxl import load_workbook
+    from growth_curves import read_od_sheet_with_plate_map
+
+    # parser = argparse.ArgumentParser(description="Compute fitness from growth curve data.")
+    parser = GooeyParser(description="Compute fitness from growth curve data.")
+    parser.add_argument(
+        'in_file',
+        help='Excel file with the growth curves.',
+        widget="FileChooser",
+    )
+    parser.add_argument(
+        'input_format',
+        # choices=['f200', 'spark', 'spark stacker']
+        choices=['f200', 'spark_single', 'spark_stacked'],
+        help="The machine which produced the growth curves. Note that if the SPARK only had one plate, you should specifiy 'spark_single', otherwise (if it ran in stacker mode) 'spark_stacked'.",
+    )
+    parser.add_argument(
+        'plate_size',
+        choices=[96, 384],
+        type=int,
+        help="The size of the plate used in the experiment.",
+    )
+    parser.add_argument(
+        'out_file',
+        help='Output file, CSV format.',
+        widget="FileChooser",
+    )
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '--sheets',
+        help="Comma-separated list of sheets to process. If not given, all sheets will be processed. Mutually exclusive with '--exclude-sheets'.",
+    )
+    group.add_argument(
+        '--exclude-sheets',
+        help="Comma-separated list of sheets to exclude from processing. Mutually exclusive with '--sheets'.",
+    )
+
+    parser.add_argument(
+        '--start-hour',
+        help="The hour to start the growth curve from (i.e., drop all data before this timepoint). Default: 0.",
+        type=float,
+    )
+    parser.add_argument(
+        '--stop-hour',
+        help="The hour to stop the growth curve at (counted from t=0, regardless of '--start-hour'). Default: the end of the growth curve.",
+        type=float,
+    )
+    args = parser.parse_args()
+
+    format = {'spark_single': 'spark', 'spark_stacked': 'spark stacker'}.get(args.input_format, args.input_format)
+
+    wb = load_workbook(args.in_file)
+    sheets = args.sheets.split(",") if args.sheets is not None else wb.sheetnames
+    if args.exclude_sheets is not None:
+        exclude_sheets = args.exclude_sheets.split(",")
+        sheets = [s for s in sheets if s not in exclude_sheets]
+
+    plate_indices = ["Row", "Column", "Cell", "Sheet"]
+    plate_key_template = {}
+    for row in "ABCDEFGH":
+        for col in range(1, 13):
+            plate_key_template[f"{row}{col}"] = (row, col, f"{row}{col}")
+
+    dfs_to_concat = []
+    for sheet_name in sheets:
+        plate_key = {k: v + (sheet_name,) for k, v in plate_key_template.items()}
+        df = read_od_sheet_with_plate_map(wb, sheet_name, plate_indices, plate_key, format, plate_type=args.plate_size, plate_name=sheet_name)
+        
+        start_hour = args.start_hour if args.start_hour is not None else 0
+        stop_hour = args.stop_hour if args.stop_hour is not None else (df["Time (s)"].max() / 60 / 60)
+        df = df[(df["Time (s)"] >= start_hour * 60 * 60) & (df["Time (s)"] <= stop_hour * 60 * 60)]
+        dfs_to_concat.append(get_model_free_fitness_df(df))
+
+    df = pd.concat(dfs_to_concat).sort_index(level=["Sheet", "Row", "Column"])
+    df.to_csv(args.out_file)
+
+if __name__ == "__main__":
+    main()
