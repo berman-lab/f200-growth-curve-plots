@@ -233,11 +233,10 @@ def get_model_free_fitness_single(df, lag_threshold=2, plot=False):
     result["Lag (s)"] = result["Lag (hr)"] = None
     cutoff_ods = df["OD"] >= df["OD"].min() * lag_threshold
     if cutoff_ods.any():
-        # We want the first timepoint so that all subsequent ODs will be bigger than the cutoff.
-        # result["Lag"] = df[ df["OD"] >= media_od_cutoffs[media] ]["Time (s)"].iloc[0] /60/60
+        # We're creating a mask where all ODs larger than the cutoff will become NaN.
+        # Therefore, the last valid index +1 will be the first index where the OD is
+        # always larger than the cutoff.
         s = (~cutoff_ods).reset_index()["OD"]
-
-        # The first numerical index of the timepoint where the OD is always larger than the cutoff:
         tt_od_index = s.where(s).last_valid_index()+1
         if tt_od_index < len(df):
             result["Lag (s)"] = df.iloc[tt_od_index]["Time (s)"]
