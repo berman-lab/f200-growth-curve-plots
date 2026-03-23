@@ -376,6 +376,30 @@ def read_od_sheet_biorad_qpcr(sheet, plate_map, plate_name, data_dict, index):
 ################################################################################
 
 def read_384_htl(fname, plate_start, key_start, num_of_plates=9, extra_source=None):
+    """Read multiple 384-well plates from a Spark Stacker output file.
+
+    Assumes the plate sheet names are in the format "Plate {index}" and the key
+    sheet names are in the format "Plate {index} keys", where the indices start
+    at `plate_start` and `key_start`, respectively.
+
+    Parameters
+    ----------
+    fname : str
+        Path to the Excel workbook.
+    plate_start : int
+        Starting index for OD sheets.
+    key_start : int
+        Starting index for plate key sheets.
+    num_of_plates : int, default: 9
+        Number of plates to read.
+    extra_source : str, optional
+        Prefix to prepend to `_Source` identifiers.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Concatenated DataFrame of all plates.
+    """
     wb = load_workbook(fname)
 
     dfs_to_concat = []
@@ -400,6 +424,37 @@ def read_384_htl(fname, plate_start, key_start, num_of_plates=9, extra_source=No
 # The origin is useful when comparing wells between different experiments that
 # came from the same thawed spot.
 def read_384_htl_with_origin(fname, plate_start, key_start, num_of_plates=9, extra_source=None):
+    """Read multiple 384-well plates from a Spark Stacker output file.
+
+    Assumes the plate sheet names are in the format "Plate {index}" and the key
+    sheet names are in the format "Plate {index} keys", where the indices start
+    at `plate_start` and `key_start`, respectively.
+
+    Adds an "Origin" column to the DataFrame, which is a numerical identifier
+    that is shared between wells that came from the same original spot in the
+    source plate. As the HTL experiments often run in triplicates, every strain
+    has 3 "sets" of growth curves, but each such set comes from a separate spot
+    or well. The "Origin" column groups the growth curves into said sets based
+    on the their spot or well of origin.
+
+    Parameters
+    ----------
+    fname : str
+        Path to the Excel workbook.
+    plate_start : int
+        Starting index for OD sheets.
+    key_start : int
+        Starting index for plate key sheets.
+    num_of_plates : int, default: 9
+        Number of plates to read.
+    extra_source : str, optional
+        Prefix to prepend to `_Source` identifiers.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Concatenated DataFrame of all plates.
+    """
     wb = load_workbook(fname)
 
     dfs_to_concat = []
@@ -446,7 +501,7 @@ def plot_ods(
     x_col="Time (s)", y_col="OD",
     x_index_key=None, y_index_key=None,
     mean_indices=None,
-    std_dev=None, # None, "bar", "area" -- must be used with mean_indices!
+    std_dev=None,
     style_func=None,
     legend="last col",
     title_all_axes=False,
@@ -459,78 +514,105 @@ def plot_ods(
     sharey=True,
     legend_ncol=1,
 ):
-    """Plot the ODs from a DataFrame returned by `read_experiment`.
-    
+    """Plot growth curves from a MultiIndex DataFrame.
+
+    This function visualizes time-series OD measurements organized in a
+    MultiIndex DataFrame, typically produced by ``read_od_sheet`` or related
+    utilities. Subplots are arranged according to selected index levels,
+    and curves within each subplot correspond to remaining index dimensions.
+
     Parameters
     ----------
     df : pandas.DataFrame
-        The DataFrame with the growth curves to plot.
+        Input DataFrame containing growth curve data. Must include columns
+        specified by `x_col` and `y_col`, and a MultiIndex whose last level
+        is "_Source".
     x_index : str, optional
-        The name of the level in `df`'s index to plot along the X axis
-        (columns) of the figure. The values of this level will be used as the
-        titles for the first row of Axes in the figure.
+        Index level used to define subplot columns. Unique values determine
+        the horizontal layout.
     y_index : str, optional
-        The name of the level in `df`'s index to plot along the Y axis (rows)
-        of the figure. The values of this level will be used as the title of
-        the y axis for the first column of the Axes in the figure.
-    x_index_grid : sequence of sequences, optional
-        If no `y_index` is given, this allows to break the `x_index` across multiple
-        rows. Defines the logical layout of the figure according to the `x_index`
-        labels. For example, two rows of three drug concentrations in each row:
-        `[[0, 8, 16], [32, 64, 128]]`.
-    x_col : str, optional
-        The column holding the x axis values for plotting. Default is 'Time (s)',
-        which will be converted to hours. No conversions will be done for other
-        values.
-    y_col : str, optional
-        The column holding the y axis values for plotting. Default is 'OD'.
+        Index level used to define subplot rows. Unique values determine
+        the vertical layout.
     x_title : str, optional
-        If x_index is not specified, this will be used as the title of the
-        first Axes in the figure.
-    y_title: str, optional
-        If y_index is not specified, this will be used as the title of the y
-        axis of the first Axes in the figure.
+        Title for columns (used when `x_index` is None or to override labels).
+    y_title : str, optional
+        Title for rows (used when `y_index` is None or to override labels).
+    x_index_grid : sequence of sequences, optional
+        Explicit layout for `x_index` values across rows. Overrides default
+        column arrangement. Each inner sequence defines one row. Assumes y_index
+        is not given.  For example, two rows of three drug concentrations in each row:
+        `[[0, 8, 16], [32, 64, 128]]`.
+    x_col : str, default: "Time (s)"
+        Column used for x-axis values. If "Time (s)", values are converted
+        to hours.
+    y_col : str, default: "OD"
+        Column used for y-axis values.
     x_index_key : callable, optional
-        A sorting key function used to order the labels of the x axis for plotting.
-    y_index_key : callabble, optional
-        As `x_index_key`, but for the y axis labels.
+        Sorting key for `x_index` labels.
+    y_index_key : callable, optional
+        Sorting key for `y_index` labels.
     mean_indices : sequence of str, optional
-        The index levels which will be used to group the growth curves for
-        averaging. For example, if ``("Strain", "Media")`` is passed, every unique
+        Index levels used to group and average curves. Remaining levels are
+        treated as replicates. For example, if ``("Strain", "Media")`` is passed, every unique
         strain-media combination will be grouped, and all remaining sub-levels
         will be averaged over to yield a single growth curve, which will then
         be plotted. If different experiments within the group have different time stamps,
         the "missing" measurements will be interpolated before averaging.
-    std_dev : {None, 'bar', 'area'}
-        If `mean_indices` is specified, this will set the method for displaying
-        the standard deviation:
-            
-        - **bar** - show the standard deviation as whiskers.
-        - **area** - show the standard deviation as a semi-transparent area.
+    std_dev : {None, "bar", "area"}, optional
+        Method for visualizing standard deviation when `mean_indices` is set:
+
+        - None: no variability shown
+        - "bar": error bars
+        - "area": shaded region
+
     style_func : callable, optional
-        A callable that accepts three parameters ``(x_label, y_label, ix)`` where ix is
-        the index of the curve to draw. It should return a dict of kwargs for
-        the `Axes.plot` method.
-    legend : {"last col", "every axes", "none"}
-        - ``"last col"`` will add a legend at the end of each row.
-        - ``"every axes"`` will add a legend to every axes.
-        - ``"none"`` will not show any legends.
-    title_all_axes : bool, default=False
-        If True, will set the title for all Axes (not just the top row).
-    cmap : str or `matplotlib.colors.Colormap`, default='viridis'
-        The colormap to use for the growth curves.
+        Function ``(x_label, y_label, condition_index) -> dict`` returning
+        matplotlib style kwargs for each curve.
+    legend : {"last col", "every axes", "none"}, default: "last col"
+        Controls legend placement:
+
+        - "last col": legend shown once per row (rightmost subplot)
+        - "every axes": legend on every subplot
+        - "none": no legends
+    title_all_axes : bool, default: False
+        If True, adds condition labels as titles to all subplots.
+    cmap : str or `matplotlib.colors.Colormap`, default: "viridis"
+        Colormap used to assign colors across conditions.
+    dpi : int, default: 150
+        Resolution of the output figure.
+    alpha : float, default: 1
+        Transparency of plotted lines.
+    figsize_x_scale : float, default: 1
+        Scaling factor for figure width.
+    figsize_y_scale : float, default: 1
+        Scaling factor for figure height.
     ax_func : callable, optional
-        A callable that takes three parameters: `ax, x_label, y_label`. `ax`
-        is an Axes object, and `x_label` and `y_label` are its labels (indices).
-        Used to plot extra things on individual Axes, e.g. 24-hour vertical lines.
-    sharey : bool or str, optional
-        Will be passed on to `plt.subplots`. It may be useful to only share the
-        y axis across rows (pass `"rows"`) or have no sharing at all (pass `False`).
-    
+        Function ``(ax, x_label, y_label)`` applied to each subplot for
+        custom annotations (e.g., vertical lines, thresholds).
+    sharey : bool or {"row", "col"}, default: True
+        Y-axis sharing behavior, passed to `matplotlib.pyplot.subplots`.
+    legend_ncol : int, default: 1
+        Number of columns in the legend.
+
     Returns
     -------
     matplotlib.figure.Figure
-        The figure with the plots.
+        The generated figure object.
+
+    Raises
+    ------
+    ValueError
+        If `std_dev` is specified without `mean_indices`.
+
+    Notes
+    -----
+    - If multiple `_Source` entries exist for a condition, they are plotted
+      as separate curves unless averaging is enabled.
+    - Missing index combinations (i.e., sparse grids) result in empty subplots,
+      which are automatically hidden.
+    - Color assignment is relative to the number of conditions within each
+      subplot and may differ between subplots if conditions are unevenly
+      distributed. For per-condition control of colors, use `style_func`.
     """
     
     if std_dev is not None and mean_indices is None:
@@ -746,7 +828,8 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
     Returns
     -------
     pandas.DataFrame
-        A new DataFrame, with `avg_levels` as the new MultiIndex, and three 
+        A new DataFrame, with `avg_levels` as the new MultiIndex, and three
+        columns: `x_col`, `y_col mean`, and `y_col std`.
     """
 
     df_in = reorder_indices(df_in, avg_levels) # Just in case the user hasn't.
@@ -797,12 +880,24 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
         
     return pd.concat(dfs_to_concat)
 
-# Example of a style function:
-def style_func(x_label, y_label, ax_index):
-    return {"label": "", "color": "", "linestyle": ""}
-
 def _parse_source(df):
-    """Return a list of dicts which maps the Key:Val pairs in the _Source index.
+    """Parse `_Source` index entries into dictionaries.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing a `_Source` index level.
+
+    Returns
+    -------
+    list of dict
+        Each entry corresponds to one row and maps key-value pairs
+        encoded in `_Source`.
+
+    Notes
+    -----
+    `_Source` entries are expected in the format:
+    ``Key1:Val1;Key2:Val2;...``.
     """
     
     result = []
@@ -819,9 +914,21 @@ def _parse_source(df):
     return result
 
 def reorder_indices(df, head=None):
-    """Return a new DataFrame with a new order of the indices, such that the
-    _Source index is last. Optionally, the first indices can be forced by the
-    `head` parameter.
+    """Reorder MultiIndex levels to place `_Source` last.
+
+    Optionally, specified levels in `head` can be placed at the beginning of the index.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame with a MultiIndex.
+    head : sequence of str, optional
+        Index levels to force at the beginning.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with reordered index levels.
     """
     if head is None:
         head = []
@@ -831,7 +938,22 @@ def reorder_indices(df, head=None):
     return df.reorder_levels(ix_names)
 
 def add_row_col(df):
-    # Assumes the df comes from a single plate!
+    """Add row and column indices based on well identifiers.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame with `_Source` index containing a 'Well' key.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with additional ``Row`` and ``Column`` index levels.
+
+    Notes
+    -----
+    Assumes all data originates from a single plate.
+    """
     result = df.copy()
     well_values = [ix["Well"] for ix in _parse_source(df)]
     result["Row"] = [w[0] for w in well_values]
@@ -842,7 +964,24 @@ def add_row_col(df):
     return result
 
 def plot_plate(df):
-    """NB: assumes the '_Source' index has a 'Well' key!"""
+    """Plot a plate layout using row/column indices.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing growth curve data with a `_Source` index level.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure object with subplots arranged as plate layout.
+
+    Notes
+    -----
+    Requires `_Source` entries to include a 'Well' key.
+    """
+    # TODO: add ability to filter the DataFrame to a specific plate, in case there are multiple plates in the same DataFrame.
+    # Can probably be done by filtering on the 'Plate' key in in _Source.
     return plot_ods(
         reorder_indices(add_row_col(df).sort_index(level="Column").sort_index(level="Row")),
         x_index="Column", y_index="Row", legend="every axes",
@@ -851,6 +990,19 @@ def plot_plate(df):
 
 # Adapted from https://stackoverflow.com/a/56253636
 def legend_without_duplicate_labels(ax, **kws):
+    """Create a legend without duplicate labels.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes object to modify.
+    **kws
+        Additional keyword arguments passed to ``Axes.legend``.
+
+    Returns
+    -------
+    None
+    """
     handles, labels = ax.get_legend_handles_labels()
     unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
     ax.legend(*zip(*unique), **kws)
@@ -860,6 +1012,26 @@ def legend_without_duplicate_labels(ax, **kws):
 ################################################################################
 
 def xss(df, keys, levels, drop_singleton_levels=False):
+    """Subset a DataFrame based on MultiIndex level values.
+
+    This is similar to `DataFrame.xs`, but allows filtering by multiple values per level.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame with a MultiIndex.
+    keys : sequence of sequences
+        Allowed values for each level specified in `levels`.
+    levels : sequence of str
+        Names of index levels to filter.
+    drop_singleton_levels : bool, default: False
+        Whether to drop index levels with only one unique value.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Filtered DataFrame.
+    """
     level_ixs = [df.index.names.index(l) for l in levels]
     index_dict = {l_ix: vs for (l_ix, vs) in zip(level_ixs, keys)}
     
@@ -878,7 +1050,7 @@ def xss(df, keys, levels, drop_singleton_levels=False):
             if len(result.index.get_level_values(level_ix).unique()) <= 1:
                 result = result.droplevel(level_ix)
     
-    return result    
+    return result
 
 ################################################################################
 # Configurable plotting from Excel
