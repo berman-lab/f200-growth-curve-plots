@@ -1,11 +1,25 @@
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from matplotlib.colors import Colormap
 from matplotlib import cm
+
 import pandas as pd
 import openpyxl
 from openpyxl import load_workbook
+
 from itertools import product
 import os
 import numpy
+
+# Type aliases for better readability
+WorkbookLike = Union[str, openpyxl.Workbook]
+PlateMap = Dict[str, Tuple[Any, ...]]
+IndexTuple = Tuple[Any, ...]
+StyleFunc = Callable[[Any, Any, Any], Dict[str, Any]]
+AxFunc = Callable[[Axes, Any, Any], None]
 
 ################################################################################
 # Reading the data
@@ -34,7 +48,12 @@ user to make sure those keys exist and are correct. It is possible that not all
 keys will exist in all DataFrames (e.g., the Well key can't remain after averaging).
 """
 
-def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type=96):
+def read_plate_key(
+    in_file_or_wb: WorkbookLike,
+    sheet_name: str = "Keys",
+    converters: Optional[Dict[str, Callable[[Any], Any]]] = None,
+    plate_type: int = 96,
+) -> Tuple[List[str], PlateMap]:
     """Read the plate keys from a given sheet in an Excel file.
     
     The key sheet should consist of one or more **tables** separated by at
@@ -168,16 +187,22 @@ def read_plate_key(in_file_or_wb, sheet_name="Keys", converters=None, plate_type
         
     return keys, result
 
-def _get_workbook(in_file_or_wb):
+def _get_workbook(in_file_or_wb: WorkbookLike) -> openpyxl.Workbook:
     if isinstance(in_file_or_wb, openpyxl.Workbook):
         return in_file_or_wb
     else:
         return load_workbook(filename=in_file_or_wb)
 
 def read_od_sheet(
-    in_file_or_wb, od_sheet_name, format, key_sheet_name,
-    converters=None, plate_name=None, plate_type=96, over=70000
-):
+    in_file_or_wb: WorkbookLike,
+    od_sheet_name: str,
+    format: str,
+    key_sheet_name: str,
+    converters: Optional[Dict[str, Callable[[Any], Any]]] = None,
+    plate_name: Optional[str] = None,
+    plate_type: int = 96,
+    over: float = 70000,
+) -> pd.DataFrame:
     """Parse plate growth curve data into a DataFrame.
     
     Reads the plate data along with the relevant keys (expected to be in the
@@ -223,9 +248,15 @@ def read_od_sheet(
     return read_od_sheet_with_plate_map(wb, od_sheet_name, keys, plate_map, format, plate_name, plate_type, over)
     
 def read_od_sheet_with_plate_map(
-    in_file_or_wb, od_sheet_name, keys, plate_map, format,
-    plate_name=None, plate_type=96, over=70000
-):
+    in_file_or_wb: WorkbookLike,
+    od_sheet_name: str,
+    keys: Sequence[str],
+    plate_map: PlateMap,
+    format: str,
+    plate_name: Optional[str] = None,
+    plate_type: int = 96,
+    over: float = 70000,
+) -> pd.DataFrame:
     if plate_name is None:
         plate_name = od_sheet_name
 
@@ -251,7 +282,13 @@ def read_od_sheet_with_plate_map(
         index=pd.MultiIndex.from_tuples(index, names=list(keys)+["_Source"])
     ).dropna().sort_index()
 
-def read_od_sheet_f200(sheet, plate_map, plate_name, data_dict, index):
+def read_od_sheet_f200(
+    sheet: openpyxl.worksheet.worksheet.Worksheet,
+    plate_map: PlateMap,
+    plate_name: str,
+    data_dict: Dict[str, List[Any]],
+    index: List[IndexTuple],
+) -> None:
     for row_ix, row in enumerate(sheet.iter_rows()):
         if "Time [s]" in str(row[0].value):
             break
@@ -273,7 +310,15 @@ def read_od_sheet_f200(sheet, plate_map, plate_name, data_dict, index):
         
         index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(time_series)
 
-def read_od_sheet_spark_stacker(sheet, plate_map, plate_name, plate_type, data_dict, index, over):
+def read_od_sheet_spark_stacker(
+    sheet: openpyxl.worksheet.worksheet.Worksheet,
+    plate_map: PlateMap,
+    plate_name: str,
+    plate_type: int,
+    data_dict: Dict[str, List[Any]],
+    index: List[IndexTuple],
+    over: float,
+) -> None:
     assert plate_type in (96, 384), "Plate type can only be 96 or 384"
     row_num = 8 if plate_type == 96 else 8*2
     col_num = 12 if plate_type == 96 else 12*2
@@ -316,7 +361,13 @@ def read_od_sheet_spark_stacker(sheet, plate_map, plate_name, plate_type, data_d
             # These will be read starting with the next iteration
             table_rows_to_read = row_num
 
-def read_od_sheet_spark(sheet, plate_map, plate_name, data_dict, index):
+def read_od_sheet_spark(
+    sheet: openpyxl.worksheet.worksheet.Worksheet,
+    plate_map: PlateMap,
+    plate_name: str,
+    data_dict: Dict[str, List[Any]],
+    index: List[IndexTuple],
+) -> None:
     for row_ix, row in enumerate(sheet.iter_rows()):
         cell_value = row[0].value
         if cell_value == "STOP" or cell_value == "End Time":
@@ -353,7 +404,13 @@ def read_od_sheet_spark(sheet, plate_map, plate_name, data_dict, index):
                 index += [plate_map[well] + (f"Plate:{plate_name};Well:{well};",)] * len(ods_row)
 
 
-def read_od_sheet_biorad_qpcr(sheet, plate_map, plate_name, data_dict, index):
+def read_od_sheet_biorad_qpcr(
+    sheet: openpyxl.worksheet.worksheet.Worksheet,
+    plate_map: PlateMap,
+    plate_name: str,
+    data_dict: Dict[str, List[Any]],
+    index: List[IndexTuple],
+) -> None:
     for row_ix, row in enumerate(sheet.iter_rows()):
         if row_ix == 0:
             # Header row
@@ -375,7 +432,13 @@ def read_od_sheet_biorad_qpcr(sheet, plate_map, plate_name, data_dict, index):
 # Reading utilities
 ################################################################################
 
-def read_384_htl(fname, plate_start, key_start, num_of_plates=9, extra_source=None):
+def read_384_htl(
+    fname: str,
+    plate_start: int,
+    key_start: int,
+    num_of_plates: int = 9,
+    extra_source: Optional[str] = None,
+) -> pd.DataFrame:
     """Read multiple 384-well plates from a Spark Stacker output file.
 
     Assumes the plate sheet names are in the format "Plate {index}" and the key
@@ -423,7 +486,13 @@ def read_384_htl(fname, plate_start, key_start, num_of_plates=9, extra_source=No
 # TODO: refactor read_384_htl into read_384_htl_with_origin
 # The origin is useful when comparing wells between different experiments that
 # came from the same thawed spot.
-def read_384_htl_with_origin(fname, plate_start, key_start, num_of_plates=9, extra_source=None):
+def read_384_htl_with_origin(
+    fname: str,
+    plate_start: int,
+    key_start: int,
+    num_of_plates: int = 9,
+    extra_source: Optional[str] = None,
+) -> pd.DataFrame:
     """Read multiple 384-well plates from a Spark Stacker output file.
 
     Assumes the plate sheet names are in the format "Plate {index}" and the key
@@ -495,25 +564,30 @@ def read_384_htl_with_origin(fname, plate_start, key_start, num_of_plates=9, ext
 ################################################################################
 
 def plot_ods(
-    df,
-    x_index=None, y_index=None, x_title=None, y_title=None,
-    x_index_grid=None,
-    x_col="Time (s)", y_col="OD",
-    x_index_key=None, y_index_key=None,
-    mean_indices=None,
-    std_dev=None,
-    style_func=None,
-    legend="last col",
-    title_all_axes=False,
-    cmap="viridis",
-    dpi=150,
-    alpha=1,
-    figsize_x_scale=1,
-    figsize_y_scale=1,
-    ax_func=None,
-    sharey=True,
-    legend_ncol=1,
-):
+    df: pd.DataFrame,
+    x_index: Optional[str] = None,
+    y_index: Optional[str] = None,
+    x_title: Optional[str] = None,
+    y_title: Optional[str] = None,
+    x_index_grid: Optional[Sequence[Sequence[Any]]] = None,
+    x_col: str = "Time (s)",
+    y_col: str = "OD",
+    x_index_key: Optional[Callable[[Any], Any]] = None,
+    y_index_key: Optional[Callable[[Any], Any]] = None,
+    mean_indices: Optional[Sequence[str]] = None,
+    std_dev: Optional[str] = None,
+    style_func: Optional[StyleFunc] = None,
+    legend: str = "last col",
+    title_all_axes: bool = False,
+    cmap: Union[str, Colormap] = "viridis",
+    dpi: int = 150,
+    alpha: float = 1,
+    figsize_x_scale: float = 1,
+    figsize_y_scale: float = 1,
+    ax_func: Optional[AxFunc] = None,
+    sharey: Union[bool, str] = True,
+    legend_ncol: int = 1,
+) -> Figure:
     """Plot growth curves from a MultiIndex DataFrame.
 
     This function visualizes time-series OD measurements organized in a
@@ -803,7 +877,13 @@ def plot_ods(
     
     return fig
 
-def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_method="from_derivatives"):
+def avg_over_ixs(
+    df_in: pd.DataFrame,
+    avg_levels: Sequence[str],
+    x_col: str = "Time (s)",
+    y_col: str = "OD",
+    interpolation_method: str = "from_derivatives",
+) -> pd.DataFrame:
     """Return a DataFrame that averages all levels over a given set of levels.
     
     If the timestamps differ between any measurement series, measurements will
@@ -880,7 +960,7 @@ def avg_over_ixs(df_in, avg_levels, x_col="Time (s)", y_col="OD", interpolation_
         
     return pd.concat(dfs_to_concat)
 
-def _parse_source(df):
+def _parse_source(df: pd.DataFrame) -> List[Dict[str, str]]:
     """Parse `_Source` index entries into dictionaries.
 
     Parameters
@@ -913,7 +993,10 @@ def _parse_source(df):
 
     return result
 
-def reorder_indices(df, head=None):
+def reorder_indices(
+    df: pd.DataFrame,
+    head: Optional[Sequence[str]] = None
+) -> pd.DataFrame:
     """Reorder MultiIndex levels to place `_Source` last.
 
     Optionally, specified levels in `head` can be placed at the beginning of the index.
@@ -937,7 +1020,7 @@ def reorder_indices(df, head=None):
         ["_Source"]
     return df.reorder_levels(ix_names)
 
-def add_row_col(df):
+def add_row_col(df: pd.DataFrame) -> pd.DataFrame:
     """Add row and column indices based on well identifiers.
 
     Parameters
@@ -963,7 +1046,7 @@ def add_row_col(df):
     
     return result
 
-def plot_plate(df):
+def plot_plate(df: pd.DataFrame) -> Figure:
     """Plot a plate layout using row/column indices.
 
     Parameters
@@ -989,7 +1072,7 @@ def plot_plate(df):
     )
 
 # Adapted from https://stackoverflow.com/a/56253636
-def legend_without_duplicate_labels(ax, **kws):
+def legend_without_duplicate_labels(ax: Axes, **kws: Any) -> None:
     """Create a legend without duplicate labels.
 
     Parameters
@@ -1011,7 +1094,12 @@ def legend_without_duplicate_labels(ax, **kws):
 # Utilities
 ################################################################################
 
-def xss(df, keys, levels, drop_singleton_levels=False):
+def xss(
+    df: pd.DataFrame,
+    keys: Sequence[Sequence[Any]],
+    levels: Sequence[str],
+    drop_singleton_levels: bool = False,
+) -> pd.DataFrame:
     """Subset a DataFrame based on MultiIndex level values.
 
     This is similar to `DataFrame.xs`, but allows filtering by multiple values per level.
