@@ -1,3 +1,4 @@
+from typing import Optional, Dict, Any
 import pandas as pd
 from growth_curves import reorder_indices, xss
 from itertools import product
@@ -179,7 +180,34 @@ def normalize_glucose(df):
 # Sanitizing the growth curves before fitness estimations is strongly recommended.
 # Artifacts in reading the OD can really mess with naive estimators.
 
-def sanitize_growth_curves(df):
+def sanitize_growth_curves(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove initial artifacts from growth curves.
+
+    Applies a per-curve filter that removes an initial monotonically decreasing
+    segment in OD values, which may arise from measurement artifacts.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame containing growth curves. Must include an "OD" column
+        and a MultiIndex identifying individual curves.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with the same structure as input, but with initial decreasing
+        segments removed from each growth curve.
+
+    Notes
+    -----
+    - The filtering is applied independently to each index group.
+    - The current implementation removes the longest prefix where OD decreases.
+    """
+
+    # TODO: ChatGPT added the following note:
+    # - This may remove entire curves if they are strictly decreasing.
+    # Is this actually the case, and if so, should we do anything about it?
+
     result = df.copy()
     
     # For some reason, sometimes a few of the first readings have a high OD, which then collapses back to the baseline.
@@ -204,7 +232,7 @@ def sanitize_growth_curves(df):
     #         return df.iloc[ix_cutoff:]
 
     # This method cuts the first monotonically decreasing portion:
-    def filter_spikes(df):
+    def filter_spikes(df: pd.DataFrame) -> pd.DataFrame:
         diff = df["OD"].iloc[:-1] > df["OD"].iloc[1:]
         ix_cutoff = diff.argmin()
         return df.iloc[ix_cutoff:]
@@ -220,14 +248,40 @@ def sanitize_growth_curves(df):
 
 # Nominal fitness 
 
-def get_model_free_fitness_single(df, lag_threshold=2, plot=False):
-    # Assumes `df` contains a single growth curve.
-    # Returns the following columns:
-    # * Max OD
-    # * Lag (s)
-    # * Lag (hr) # Given in hours, rounded to 2 decimal points.
-    # * Max slope
-    # * Max slope (smoothed) # The max slope of the growth curve after smoothing (see code for reference).
+def get_model_free_fitness_single(
+    df: pd.DataFrame,
+    lag_threshold: float = 2,
+    plot: bool = False
+) -> pd.Series:
+    """Compute model-free fitness metrics for a single growth curve.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame representing a single growth curve. Must contain columns
+        "OD" and "Time (s)".
+    lag_threshold : float, default: 2
+        Threshold multiplier relative to the minimum OD used to estimate lag.
+    plot : bool, default: False
+        If True, generates diagnostic plots of OD and derivatives.
+
+    Returns
+    -------
+    pandas.Series
+        Series containing the following metrics:
+        - "Max OD"
+        - "Lag (s)"
+        - "Lag (hr)"
+        - "Max slope"
+        - "Max slope (smoothed)"
+
+    Notes
+    -----
+    - Lag is defined as the first timepoint where OD exceeds
+      `min(OD) * lag_threshold`.
+    - Slope is computed using a numerical gradient.
+    - Smoothed slope is computed after applying a Savitzky-Golay filter.
+    """
     result = {}
     
     result["Lag (s)"] = result["Lag (hr)"] = None
@@ -269,7 +323,26 @@ def get_model_free_fitness_single(df, lag_threshold=2, plot=False):
     
     return pd.Series(result)
 
-def get_model_free_fitness_df(df):
+
+def get_model_free_fitness_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute model-free fitness metrics for all growth curves.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame containing multiple growth curves.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame where each row corresponds to a growth curve and columns
+        contain fitness metrics.
+
+    Notes
+    -----
+    Applies `get_model_free_fitness_single` to each group defined by the
+    full index of `df`.
+    """
     return df.groupby(df.index.names).apply(get_model_free_fitness_single)
 
 
@@ -277,7 +350,38 @@ def get_model_free_fitness_df(df):
 # MICs
 ################################################################################
 
-def get_mic_distributions(df, timepoint=24, inhibition=0.5):
+def get_mic_distributions(
+    df: pd.DataFrame,
+    timepoint: float = 24,
+    inhibition: float = 0.5
+) -> pd.DataFrame:
+    """Compute MIC distributions across conditions.
+
+    For every FLC concentration, we compute the fraction of replicates that are
+    below a target OD (computed at FLC=0).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Growth curve DataFrame with an "FLC" index level and columns including
+        "OD" and "Time (s)".
+    timepoint : float, default: 24
+        Time (in hours) at which OD values are evaluated.
+    inhibition : float, default: 0.5
+        Fractional inhibition threshold used to define MIC.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame of MIC probabilities per condition, indexed by all index
+        levels except "_Source", with FLC values as columns.
+
+    Notes
+    -----
+    - The target OD is defined as a linear interpolation between min and max OD
+      at FLC = 0, scaled by (1 - inhibition).
+    - MIC is defined as the fraction of replicates below this threshold.
+    """
     df_flc0 = df.xs(0, level="FLC")["OD"]
     gb_obj = df_flc0.groupby(df_flc0.index.names)
     target_ods_series = (gb_obj.max() + gb_obj.min()) * (1-inhibition)
@@ -293,7 +397,38 @@ def get_mic_distributions(df, timepoint=24, inhibition=0.5):
 
     return mics_df
 
-def get_mic_ranges(df, threshold=1, agg_col=None):
+def get_mic_ranges(
+    df: pd.DataFrame,
+    threshold: float = 1,
+    agg_col: Optional[str] = None
+) -> pd.DataFrame:
+    """Convert MIC distributions into MIC ranges.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame where columns correspond to FLC concentrations and values
+        represent MIC probabilities or scores.
+    threshold : float, default: 1
+        Minimum value required to consider a concentration as inhibitory.
+    agg_col : str, optional
+        Index level to aggregate over when computing MIC ranges.
+
+    Returns
+    -------
+    pandas.DataFrame or pandas.Series
+        If `agg_col` is None, returns MIC assignments per row.
+        Otherwise, returns aggregated MIC ranges with columns:
+        "from_mic" and "to_mic".
+
+    Notes
+    -----
+    - MIC is defined as the lowest FLC where the value exceeds `threshold`.
+    - Special cases:
+        - Below lowest concentration → "<min"
+        - Above highest concentration → ">max"
+        - Zero concentration → "0?"
+    """
     flcs = df.columns
     max_flc = max(flcs)
     min_flc = flcs[1]
