@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 import pandas as pd
 from growth_curves import reorder_indices, xss
 from itertools import product
@@ -353,47 +353,95 @@ def get_model_free_fitness_df(df: pd.DataFrame) -> pd.DataFrame:
 def get_mic_distributions(
     df: pd.DataFrame,
     timepoint: float = 24,
-    inhibition: float = 0.5
+    inhibition: float = 0.5,
+    timepoint_loc: Literal["left", "right"] = "left",
+    target_od_method: Literal["median", "mean"] = "median",
+    drug_ix_name: str = "FLC",
 ) -> pd.DataFrame:
-    """Compute MIC distributions across conditions.
+    """Compute MIC distributions based on OD inhibition at a fixed timepoint.
 
-    For every FLC concentration, we compute the fraction of replicates that are
-    below a target OD (computed at FLC=0).
+    For each growth curve, the OD at a specified timepoint is compared to a
+    target OD derived from the corresponding no-drug (e.g., FLC=0) condition.
+    The MIC distribution is defined as the fraction of curves whose OD falls
+    below this target at each drug concentration.
 
     Parameters
     ----------
     df : pandas.DataFrame
-        Growth curve DataFrame with an "FLC" index level and columns including
-        "OD" and "Time (s)".
+        Input DataFrame containing growth curves. Must include:
+        - Columns: "OD", "Time (s)"
+        - A MultiIndex including `_Source` and a drug concentration level
+          specified by `drug_ix_name`.
     timepoint : float, default: 24
         Time (in hours) at which OD values are evaluated.
     inhibition : float, default: 0.5
-        Fractional inhibition threshold used to define MIC.
+        Fractional inhibition used to define the target OD. The target is
+        computed as:
+
+            min_OD + (max_OD - min_OD) * (1 - inhibition)
+
+        based on the no-drug condition at the `timepoint`.
+    timepoint_loc : {"left", "right"}, default: "left"
+        Strategy for selecting the timepoint:
+        - "left": use the last timepoint <= specified timepoint
+        - "right": use the first timepoint >= specified timepoint
+    target_od_method : {"median", "mean"}, default: "median"
+        Aggregation method used to compute the target OD across replicates.
+    drug_ix_name : str, default: "FLC"
+        Name of the index level corresponding to drug concentration.
 
     Returns
     -------
     pandas.DataFrame
-        DataFrame of MIC probabilities per condition, indexed by all index
-        levels except "_Source", with FLC values as columns.
+        DataFrame indexed by all index levels except `_Source` and `drug_ix_name`,
+        with columns corresponding to drug concentrations. Values represent the
+        fraction of curves below the target OD (i.e., inhibited fraction).
 
     Notes
     -----
-    - The target OD is defined as a linear interpolation between min and max OD
-      at FLC = 0, scaled by (1 - inhibition).
-    - MIC is defined as the fraction of replicates below this threshold.
+    - Timepoints are aligned by selecting a single measurement per curve;
+      no interpolation is performed.
+
+    Raises
+    ------
+    KeyError
+        If the specified `drug_ix_name` level or required columns are missing.
+    IndexError
+        If no valid timepoint is found under the selected `timepoint_loc`.
     """
-    df_flc0 = df.xs(0, level="FLC")["OD"]
-    gb_obj = df_flc0.groupby(df_flc0.index.names)
-    target_ods_series = (gb_obj.max() + gb_obj.min()) * (1-inhibition)
-    target_ods_series = target_ods_series.groupby(level=target_ods_series.index.names.difference(["_Source"])).mean()
-    
-    timepoints_series = df[["Time (s)"]].groupby(df.index.names).agg( (lambda x: x[x > timepoint*60*60].iloc[0]) ).set_index("Time (s)", append=True)
+
+    # TODO: consider adding timepoint_loc="closest" that will take the closest timepoint to the specified one, regardless of whether it's on the left or right.
+    # Also interpolated exactly at timepoint could be interesting, but would require more code to do properly
+    # (e.g. checking that there are timepoints on both sides of the specified timepoint, and that they are not too far from it).
+
+    # Timepoints to take for every curve:
+    # We're setting the timepoint to be part of the index so that we can access the OD at that timepoint directly.
+    if timepoint_loc == "left":
+        timepoints_series = df[["Time (s)"]].groupby(df.index.names).agg( (lambda x: x[x <= timepoint*60*60].iloc[-1]) ).set_index("Time (s)", append=True)
+    elif timepoint_loc == "right":
+        timepoints_series = df[["Time (s)"]].groupby(df.index.names).agg( (lambda x: x[x >= timepoint*60*60].iloc[0]) ).set_index("Time (s)", append=True)
+
+    # Get the ODs at the timepoints:
     ods_at_timepoint_series = df.set_index("Time (s)", append=True)["OD"].loc[timepoints_series.index].reset_index(level="Time (s)", drop=True)
-    # TODO: we have to remove the "FLC" column when accessing target_ods_series, currently assuming it's the second column.
-    is_below_target_od_series = ods_at_timepoint_series.to_frame().apply(lambda x: x[0] < target_ods_series.loc[x.name[:1] + x.name[2:-1]], axis=1)
+
+    # Compute the target OD per every index based on its OD at the timepoint in drug=0.
+    df_flc0 = df.xs(0, level=drug_ix_name).join(timepoints_series.reset_index("Time (s)"), rsuffix="_max")
+    df_flc0 = df_flc0[ df_flc0["Time (s)"] <= df_flc0["Time (s)_max"] ]["OD"].droplevel(drug_ix_name)
+    gb_obj = df_flc0.groupby(df_flc0.index.names)
+    target_ods_series = (gb_obj.max() - gb_obj.min()) * (1-inhibition) + gb_obj.min()
+    target_ods_series = target_ods_series.groupby(level=target_ods_series.index.names.difference(["_Source"]))
+    if target_od_method == "median":
+        target_ods_series = target_ods_series.median()
+    elif target_od_method == "mean":
+        target_ods_series = target_ods_series.mean()
     
+    # Compare the OD at the timepoint to the target OD:
+    df_both_ods = ods_at_timepoint_series.to_frame().join(target_ods_series, rsuffix="_target")
+    is_below_target_od_series = df_both_ods["OD"] < df_both_ods["OD_target"]
+    
+    # Compute the fraction of curves that are below the target OD per every drug concentration:
     gb_obj = is_below_target_od_series.groupby(is_below_target_od_series.index.names.difference(["_Source"]))
-    mics_df = (gb_obj.sum() / gb_obj.count()).unstack(level="FLC")
+    mics_df = (gb_obj.sum() / gb_obj.count()).unstack(level=drug_ix_name)
 
     return mics_df
 
